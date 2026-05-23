@@ -65,7 +65,7 @@ let
   # via the helper socket with a simple: nixadmin-rebuild <action>
   rebuildBin = pkgs.writers.writePython3Bin "nixadmin-rebuild" {
     libraries  = [];
-    flakeIgnore = [ "E501" ];
+    flakeIgnore = [ "E501" "E401" ];
   } ''
 import socket, json, sys
 
