@@ -196,6 +196,10 @@ in {
         Restart    = "on-failure";
         RestartSec = "3s";
         PrivateTmp = true;
+        # Only kill the helper process itself, not its children (e.g. nixos-rebuild).
+        # Without this, systemd kills the nixos-rebuild subprocess when stopping the
+        # service during a switch, preventing the switch from completing.
+        KillMode   = "process";
         # ProtectHome must be off — nixos-rebuild reads the flake from the user's home dir.
         # Do NOT set ProtectSystem — nixos-rebuild writes to /nix/store.
       };
