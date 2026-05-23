@@ -46,7 +46,7 @@ def handle_client(conn: socket.socket) -> None:
                 )
                 return
 
-            cmd = ["nixos-rebuild", action, "--flake", f"{FLAKE_DIR}#{HOSTNAME}"]
+            cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"{FLAKE_DIR}#{HOSTNAME}"]
 
             proc = subprocess.Popen(
                 cmd,
