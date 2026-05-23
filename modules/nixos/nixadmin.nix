@@ -65,7 +65,7 @@ let
   # nixos-rebuild on behalf of the nixadmin group. No sudo involved.
   helperBin = pkgs.writers.writePython3Bin "nixadmin-helper" {
     libraries  = [];  # stdlib only
-    flakeIgnore = [ "E501" ];
+    flakeIgnore = [ "E501" "E221" ];
   } (builtins.readFile ./helper/nixadmin-helper.py);
 
 in {
