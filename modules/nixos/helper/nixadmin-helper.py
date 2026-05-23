@@ -49,14 +49,17 @@ def handle_client(conn: socket.socket) -> None:
             cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"{FLAKE_DIR}#{HOSTNAME}"]
 
             # Trust the flake dir even though it's owned by a non-root user.
-            # Nix uses git to fetch the flake; git refuses repos owned by other users
-            # unless safe.directory is set. We pass it inline via env vars.
+            # Nix uses libgit2 internally; it reads GIT_CONFIG_GLOBAL but not
+            # GIT_CONFIG_COUNT/KEY/VALUE, so we write a real temp gitconfig file.
+            import tempfile
+            gitcfg = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".gitconfig", delete=False
+            )
+            gitcfg.write("[safe]\n\tdirectory = *\n")
+            gitcfg.close()
+
             env = os.environ.copy()
-            env.update({
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "safe.directory",
-                "GIT_CONFIG_VALUE_0": "*",
-            })
+            env["GIT_CONFIG_GLOBAL"] = gitcfg.name
 
             proc = subprocess.Popen(
                 cmd,
@@ -71,6 +74,7 @@ def handle_client(conn: socket.socket) -> None:
                 f.write(json.dumps({"stream": line}).encode() + b"\n")
 
             proc.wait()
+            os.unlink(gitcfg.name)
             f.write(json.dumps({"exit": proc.returncode}).encode() + b"\n")
 
     except BrokenPipeError:
