@@ -61,6 +61,50 @@ let
       nixadmin-ollama:latest
   '';
 
+  # CLI wrapper — lets any user in the nixadmin group run nixos-rebuild
+  # via the helper socket with a simple: nixadmin-rebuild <action>
+  rebuildBin = pkgs.writers.writePython3Bin "nixadmin-rebuild" {
+    libraries  = [];
+    flakeIgnore = [ "E501" ];
+  } ''
+import socket, json, sys
+
+SOCKET = "/run/nixadmin-helper.sock"
+ACTIONS = ["test", "switch", "boot", "revert"]
+
+action = sys.argv[1] if len(sys.argv) > 1 else "test"
+if action not in ACTIONS:
+    print(f"Usage: nixadmin-rebuild <{'|'.join(ACTIONS)}>", file=sys.stderr)
+    sys.exit(1)
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.connect(SOCKET)
+except OSError as e:
+    print(f"nixadmin-rebuild: cannot connect to {SOCKET}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+sock.sendall(json.dumps({"action": action}).encode())
+sock.shutdown(socket.SHUT_WR)
+
+buf = b""
+while True:
+    chunk = sock.recv(4096)
+    if not chunk:
+        break
+    buf += chunk
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        if not line.strip():
+            continue
+        msg = json.loads(line)
+        if "stream" in msg:
+            sys.stdout.write(msg["stream"])
+            sys.stdout.flush()
+        if "exit" in msg:
+            sys.exit(msg["exit"])
+'';
+
   # Privileged helper — runs as root, listens on a Unix socket, executes
   # nixos-rebuild on behalf of the nixadmin group. No sudo involved.
   helperBin = pkgs.writers.writePython3Bin "nixadmin-helper" {
@@ -127,6 +171,8 @@ in {
     systemd.tmpfiles.rules = [
       "f /var/lib/systemd/linger/${cfg.user} 0644 root root -"
     ];
+
+    environment.systemPackages = [ rebuildBin ];
 
     virtualisation.podman.enable = true;
 
