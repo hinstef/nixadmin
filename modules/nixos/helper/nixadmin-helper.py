@@ -48,7 +48,11 @@ def handle_client(conn: socket.socket) -> None:
 
             # Use path: prefix to bypass nix's git ownership check.
             # Without it, nix (via libgit2) rejects repos owned by non-root users.
-            cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"path:{FLAKE_DIR}#{HOSTNAME}"]
+            # "revert" maps to "switch --rollback" — there is no nixos-rebuild revert subcommand.
+            if action == "revert":
+                cmd = ["/run/current-system/sw/bin/nixos-rebuild", "switch", "--rollback"]
+            else:
+                cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"path:{FLAKE_DIR}#{HOSTNAME}"]
 
             proc = subprocess.Popen(
                 cmd,
