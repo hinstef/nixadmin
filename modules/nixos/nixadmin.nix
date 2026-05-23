@@ -150,7 +150,7 @@ in {
         Restart    = "on-failure";
         RestartSec = "3s";
         PrivateTmp = true;
-        ProtectHome = true;
+        # ProtectHome must be off — nixos-rebuild reads the flake from the user's home dir.
         # Do NOT set ProtectSystem — nixos-rebuild writes to /nix/store.
       };
     };
