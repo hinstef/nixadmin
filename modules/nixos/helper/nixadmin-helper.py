@@ -48,12 +48,23 @@ def handle_client(conn: socket.socket) -> None:
 
             cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"{FLAKE_DIR}#{HOSTNAME}"]
 
+            # Trust the flake dir even though it's owned by a non-root user.
+            # Nix uses git to fetch the flake; git refuses repos owned by other users
+            # unless safe.directory is set. We pass it inline via env vars.
+            env = os.environ.copy()
+            env.update({
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "safe.directory",
+                "GIT_CONFIG_VALUE_0": "*",
+            })
+
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,  # merge stderr into stdout
                 text=True,
                 bufsize=1,                 # line-buffered
+                env=env,
             )
 
             for line in proc.stdout:
