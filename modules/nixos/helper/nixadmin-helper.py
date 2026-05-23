@@ -5,7 +5,7 @@ Runs as root. Accepts JSON requests from the nixadmin group, executes
 nixos-rebuild, and streams stdout+stderr back line by line.
 
 Protocol (newline-terminated JSON on both sides):
-  Request:  {"action": "test"|"switch"|"revert"}
+  Request:  {"action": "test"|"switch"|"boot"|"revert"}
   Response: zero or more {"stream": "<line>"}
   Finally:  {"exit": <returncode>}
 """
@@ -19,7 +19,7 @@ import sys
 import threading
 
 SOCKET_PATH = "/run/nixadmin-helper.sock"
-ALLOWED_ACTIONS = {"test", "switch", "revert"}
+ALLOWED_ACTIONS = {"test", "switch", "revert", "boot"}
 
 FLAKE_DIR = os.environ["NIXADMIN_FLAKE_DIR"]
 HOSTNAME   = os.environ["NIXADMIN_HOSTNAME"]
@@ -53,6 +53,7 @@ def handle_client(conn: socket.socket) -> None:
                 cmd = ["/run/current-system/sw/bin/nixos-rebuild", "switch", "--rollback"]
             else:
                 cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"path:{FLAKE_DIR}#{HOSTNAME}"]
+            # "boot" stages the new generation for next reboot without activating it live
 
             proc = subprocess.Popen(
                 cmd,
