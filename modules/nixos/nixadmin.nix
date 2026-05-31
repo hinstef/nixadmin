@@ -214,6 +214,7 @@ in {
 
       serviceConfig = {
         Type = "simple";
+        Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
         ExecStartPre = [
           # Load image only when the store path has changed (post nixos-rebuild switch).
           "${loadScript}"
