@@ -109,7 +109,7 @@ while True:
   # Shows only the final assistant reply; suppresses tool call blocks and thinking.
   nixadminRpc = pkgs.writers.writePython3Bin "nixadmin-rpc" {
     libraries  = [];
-    flakeIgnore = [ "E501" "E221" "E302" "E303" ];
+    flakeIgnore = [ "E501" "E221" "E302" "E303" "E401" "E305" ];
   } ''
 import sys, json, subprocess, threading, time, signal, shutil
 
