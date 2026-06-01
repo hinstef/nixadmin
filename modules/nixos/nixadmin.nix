@@ -115,20 +115,6 @@ import sys, json, subprocess, threading, time, signal, shutil
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-def extract_text(messages):
-    for msg in reversed(messages):
-        if msg.get("role") != "assistant":
-            continue
-        c = msg.get("content", "")
-        if isinstance(c, str):
-            return c.strip()
-        if isinstance(c, list):
-            return "".join(
-                b.get("text", "") for b in c
-                if isinstance(b, dict) and b.get("type") == "text"
-            ).strip()
-    return ""
-
 def main():
     pi = shutil.which("pi") or "pi"
     cmd = [pi, "--mode", "rpc"] + sys.argv[1:]
@@ -143,6 +129,7 @@ def main():
     spin_stop = threading.Event()
     spin_on   = [False]
     spin_thr  = [None]
+    streaming  = [False]  # True while assistant text is streaming
 
     def _spin():
         while not spin_stop.is_set():
@@ -177,7 +164,6 @@ def main():
     turn_done = threading.Event()
 
     def on_events():
-        depth = 0
         for raw in proc.stdout:
             line = raw.strip()
             if not line:
@@ -187,18 +173,26 @@ def main():
             except ValueError:
                 continue
             t = ev.get("type", "")
-            if t == "tool_execution_start":
-                depth += 1
-                if depth == 1:
-                    spin_start()
-            elif t == "tool_execution_end":
-                depth = max(0, depth - 1)
+            if t == "turn_start":
+                streaming[0] = False
+                spin_start()
+            elif t == "message_update":
+                ame = ev.get("assistantMessageEvent", {})
+                if ame.get("type") == "text_delta":
+                    delta = ame.get("delta", "")
+                    if delta:
+                        spin_end()
+                        streaming[0] = True
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
             elif t == "agent_end":
                 spin_end()
-                text = extract_text(ev.get("messages", []))
-                if text:
-                    print(text)
-                turn_done.set()
+                if streaming[0]:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                streaming[0] = False
+                if not ev.get("willRetry"):
+                    turn_done.set()
             elif t == "extension_ui_request":
                 spin_end()
                 method = ev.get("method", "")
@@ -209,17 +203,19 @@ def main():
                     if msg:
                         print("\n" + msg)
                 elif method == "input":
-                    prompt = params.get("prompt") or "Input"
-                    val = input(prompt + ": ")
+                    prompt = params.get("title") or params.get("prompt") or "Input"
+                    val = input("\n" + prompt + ": ")
                     send({"type": "extension_ui_response", "id": rid, "value": val})
                 elif method == "confirm":
-                    prompt = params.get("prompt") or "Confirm?"
-                    ans = input(prompt + " [y/N] ").strip().lower()
-                    send({"type": "extension_ui_response", "id": rid, "value": ans in ("y", "yes")})
+                    title = params.get("title") or "Confirm?"
+                    msg   = params.get("message", "")
+                    label = (title + " " + msg).strip()
+                    ans = input("\n" + label + " [y/N] ").strip().lower()
+                    send({"type": "extension_ui_response", "id": rid, "confirmed": ans in ("y", "yes")})
                 elif method == "select":
-                    prompt  = params.get("prompt") or "Choose"
+                    title   = params.get("title") or "Choose"
                     options = params.get("options", [])
-                    print("\n" + prompt)
+                    print("\n" + title)
                     for i, opt in enumerate(options):
                         lbl = opt.get("label", str(opt)) if isinstance(opt, dict) else str(opt)
                         print("  " + str(i + 1) + ") " + lbl)
@@ -249,7 +245,7 @@ def main():
             if not line:
                 continue
             turn_done.clear()
-            send({"type": "user_message", "content": line})
+            send({"type": "prompt", "message": line})
             turn_done.wait()
     finally:
         spin_end()
