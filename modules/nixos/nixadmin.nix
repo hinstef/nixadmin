@@ -105,6 +105,159 @@ while True:
             sys.exit(msg["exit"])
 '';
 
+  # RPC wrapper — replaces the pi TUI with a clean prompt + spinner.
+  # Shows only the final assistant reply; suppresses tool call blocks and thinking.
+  nixadminRpc = pkgs.writers.writePython3Bin "nixadmin-rpc" {
+    libraries  = [];
+    flakeIgnore = [ "E501" "E221" "E302" "E303" ];
+  } ''
+import sys, json, subprocess, threading, time, signal, shutil
+
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+def extract_text(messages):
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        c = msg.get("content", "")
+        if isinstance(c, str):
+            return c.strip()
+        if isinstance(c, list):
+            return "".join(
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+    return ""
+
+def main():
+    pi = shutil.which("pi") or "pi"
+    cmd = [pi, "--mode", "rpc"] + sys.argv[1:]
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    except FileNotFoundError:
+        print("nixadmin: pi not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    spin_idx = [0]
+    spin_stop = threading.Event()
+    spin_on   = [False]
+    spin_thr  = [None]
+
+    def _spin():
+        while not spin_stop.is_set():
+            c = SPINNER[spin_idx[0] % len(SPINNER)]
+            spin_idx[0] += 1
+            sys.stdout.write("\r" + c + " Working...")
+            sys.stdout.flush()
+            time.sleep(0.08)
+        sys.stdout.write("\r                    \r")
+        sys.stdout.flush()
+
+    def spin_start():
+        if spin_on[0]:
+            return
+        spin_on[0] = True
+        spin_stop.clear()
+        spin_thr[0] = threading.Thread(target=_spin, daemon=True)
+        spin_thr[0].start()
+
+    def spin_end():
+        if not spin_on[0]:
+            return
+        spin_on[0] = False
+        spin_stop.set()
+        if spin_thr[0]:
+            spin_thr[0].join(timeout=0.5)
+
+    def send(obj):
+        proc.stdin.write(json.dumps(obj) + "\n")
+        proc.stdin.flush()
+
+    turn_done = threading.Event()
+
+    def on_events():
+        depth = 0
+        for raw in proc.stdout:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            t = ev.get("type", "")
+            if t == "tool_execution_start":
+                depth += 1
+                if depth == 1:
+                    spin_start()
+            elif t == "tool_execution_end":
+                depth = max(0, depth - 1)
+            elif t == "agent_end":
+                spin_end()
+                text = extract_text(ev.get("messages", []))
+                if text:
+                    print(text)
+                turn_done.set()
+            elif t == "extension_ui_request":
+                spin_end()
+                method = ev.get("method", "")
+                rid    = ev.get("id", "")
+                params = ev.get("params", {})
+                if method == "notify":
+                    msg = params.get("message", "")
+                    if msg:
+                        print("\n" + msg)
+                elif method == "input":
+                    prompt = params.get("prompt") or "Input"
+                    val = input(prompt + ": ")
+                    send({"type": "extension_ui_response", "id": rid, "value": val})
+                elif method == "confirm":
+                    prompt = params.get("prompt") or "Confirm?"
+                    ans = input(prompt + " [y/N] ").strip().lower()
+                    send({"type": "extension_ui_response", "id": rid, "value": ans in ("y", "yes")})
+                elif method == "select":
+                    prompt  = params.get("prompt") or "Choose"
+                    options = params.get("options", [])
+                    print("\n" + prompt)
+                    for i, opt in enumerate(options):
+                        lbl = opt.get("label", str(opt)) if isinstance(opt, dict) else str(opt)
+                        print("  " + str(i + 1) + ") " + lbl)
+                    try:
+                        idx = int(input("Choice: ").strip()) - 1
+                        val = options[max(0, min(idx, len(options) - 1))]
+                    except (ValueError, IndexError):
+                        val = options[0] if options else ""
+                    send({"type": "extension_ui_response", "id": rid, "value": val})
+
+    thr = threading.Thread(target=on_events, daemon=True)
+    thr.start()
+
+    def on_sigint(sig, frame):
+        spin_end()
+        proc.terminate()
+        print()
+        sys.exit(0)
+    signal.signal(signal.SIGINT, on_sigint)
+
+    try:
+        while proc.poll() is None:
+            try:
+                line = input("\nnixadmin> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                continue
+            turn_done.clear()
+            send({"type": "user_message", "content": line})
+            turn_done.wait()
+    finally:
+        spin_end()
+        proc.terminate()
+
+main()
+'';
+
   # Privileged helper — runs as root, listens on a Unix socket, executes
   # nixos-rebuild on behalf of the nixadmin group. No sudo involved.
   helperBin = pkgs.writers.writePython3Bin "nixadmin-helper" {
@@ -210,7 +363,7 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     fi
 
     cd ${cfg.flakeDir}
-    exec pi --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
+    exec ${nixadminRpc}/bin/nixadmin-rpc --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
   '';
 
   nixadminAlias = "${nixadminWrapper}";
@@ -331,7 +484,7 @@ in {
       "f /var/lib/systemd/linger/${cfg.user} 0644 root root -"
     ];
 
-    environment.systemPackages = [ rebuildBin ];
+    environment.systemPackages = [ rebuildBin nixadminRpc ];
 
     virtualisation.podman.enable = true;
 
