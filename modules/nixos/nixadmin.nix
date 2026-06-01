@@ -195,6 +195,14 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
       fi
     fi
 
+    # Hide thinking blocks in pi settings (safe to set on every launch).
+    SETTINGS="$HOME/.pi/agent/settings.json"
+    if ! ${pkgs.jq}/bin/jq -e '.hideThinkingBlock == true' "$SETTINGS" > /dev/null 2>&1; then
+      TMP=$(${pkgs.jq}/bin/jq '. + {"hideThinkingBlock": true, "quietStartup": true}' "$SETTINGS" 2>/dev/null \
+        || echo '{"hideThinkingBlock": true, "quietStartup": true}')
+      echo "$TMP" > "$SETTINGS"
+    fi
+
     # Inject profile into system prompt if available.
     APPEND_ARGS=()
     if [ -s "$PROFILE_FILE" ]; then
@@ -202,7 +210,7 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     fi
 
     cd ${cfg.flakeDir}
-    exec pi --model ${piModel} "''${APPEND_ARGS[@]}"
+    exec pi --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
   '';
 
   nixadminAlias = "${nixadminWrapper}";
