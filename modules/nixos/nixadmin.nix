@@ -112,6 +112,38 @@ while True:
     flakeIgnore = [ "E501" "E221" ];
   } (builtins.readFile ./helper/nixadmin-helper.py);
 
+  # Derive the nixadmin alias from the tier setting.
+  # cloud  → pi's built-in Anthropic OAuth provider (Claude Pro/Max, no API tokens).
+  #          Run /login inside pi once to authenticate.
+  # remote → OpenAI-compatible API at cfg.remote.baseUrl (LAN server, VPS, etc.)
+  # local  → local Ollama container (full privacy, always available).
+  nixadminAlias =
+    if cfg.tier == "cloud"  then "cd ${cfg.flakeDir} && pi --model anthropic/${cfg.cloud.model}"
+    else if cfg.tier == "remote" then "cd ${cfg.flakeDir} && pi --model remote/${cfg.remote.model}"
+    else "cd ${cfg.flakeDir} && pi --model ollama/${cfg.local.model}";
+
+  # Generate models.json for pi. The anthropic (cloud) provider is built-in
+  # so it is never listed here — credentials come from /login OAuth flow.
+  # Remote provider is only included when a baseUrl is configured.
+  modelsJson = builtins.toJSON {
+    providers =
+      { ollama = {
+          baseUrl = "http://localhost:11434/v1";
+          api     = "openai-completions";
+          apiKey  = "ollama";
+          models  = [{ id = cfg.local.model; }];
+        };
+      }
+      // lib.optionalAttrs (cfg.remote.baseUrl != "") {
+        remote = {
+          baseUrl = cfg.remote.baseUrl;
+          api     = "openai-completions";
+          apiKey  = "none";
+          models  = [{ id = cfg.remote.model; }];
+        };
+      };
+  };
+
 in {
 
   options.services.nixadmin = {
@@ -124,15 +156,6 @@ in {
         User who runs the Ollama container (rootless Podman). Added to the
         `nixadmin` group for helper socket access, and to `render`/`video`
         for Vulkan/DRI GPU access.
-      '';
-    };
-
-    model = lib.mkOption {
-      type    = lib.types.str;
-      default = "qwen2.5-coder:7b";
-      description = ''
-        Ollama model to use. Pull it after first switch:
-          podman exec nixadmin-ollama ollama pull <model>
       '';
     };
 
@@ -152,6 +175,43 @@ in {
         Flake output name for the NixOS configuration, i.e. the part after
         the # in --flake <flakeDir>#<hostname>.
       '';
+    };
+
+    tier = lib.mkOption {
+      type    = lib.types.enum [ "cloud" "remote" "local" ];
+      default = "local";
+      description = ''
+        Which model tier the `nixadmin` alias targets.
+          cloud  — Claude Pro/Max via pi's built-in Anthropic OAuth (run /login once).
+          remote — Self-hosted OpenAI-compatible API (LAN server, VPS, etc.).
+          local  — Local Ollama container (full privacy, always available).
+        All tiers are always configured in models.json; this only sets the default.
+      '';
+    };
+
+    cloud.model = lib.mkOption {
+      type    = lib.types.str;
+      default = "claude-sonnet-4-5";
+      description = "Claude model to use for the cloud tier.";
+    };
+
+    remote.baseUrl = lib.mkOption {
+      type    = lib.types.str;
+      default = "";
+      example = "http://homeserver:11434/v1";
+      description = "Base URL of the remote OpenAI-compatible API. Leave empty to omit the remote provider.";
+    };
+
+    remote.model = lib.mkOption {
+      type    = lib.types.str;
+      default = "llama3.3:70b";
+      description = "Model to use on the remote server.";
+    };
+
+    local.model = lib.mkOption {
+      type    = lib.types.str;
+      default = "qwen3-tool:latest";
+      description = "Local Ollama model to use.";
     };
   };
 
@@ -226,6 +286,13 @@ in {
         Restart    = "on-failure";
         RestartSec = "5s";
       };
+    };
+
+    # Home Manager integration — requires home-manager NixOS module to be imported.
+    # Generates pi's models.json and the nixadmin shell alias from the tier options.
+    home-manager.users.${cfg.user} = {
+      home.file.".pi/agent/models.json".text = modelsJson;
+      programs.zsh.shellAliases.nixadmin = nixadminAlias;
     };
   };
 }
