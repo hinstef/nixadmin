@@ -112,26 +112,100 @@ while True:
     flakeIgnore = [ "E501" "E221" ];
   } (builtins.readFile ./helper/nixadmin-helper.py);
 
-  # For the cloud tier, wrap pi with an auth check so users get a clear hint
-  # when they haven't run /login yet rather than a cryptic API error.
-  cloudWrapper = pkgs.writeShellScript "nixadmin-cloud" ''
-    if ! ${pkgs.jq}/bin/jq -e '.anthropic.type == "oauth"' \
-        "$HOME/.pi/agent/auth.json" > /dev/null 2>&1; then
-      echo "Not logged in to Claude. Type /login inside nixadmin to authenticate."
+  # Resolve the pi --model flag for the configured tier.
+  piModel =
+    if cfg.tier == "cloud"  then "anthropic/${cfg.cloud.model}"
+    else if cfg.tier == "remote" then "remote/${cfg.remote.model}"
+    else "ollama/${cfg.local.model}";
+
+  # General nixadmin wrapper — handles auth hint, machine profile generation/injection,
+  # and session counting. Used for all tiers.
+  nixadminWrapper = pkgs.writeShellScript "nixadmin" ''
+    PROFILE_DIR="$HOME/.local/share/nixadmin"
+    PROFILE_FILE="$PROFILE_DIR/machine-profile.md"
+    SESSION_FILE="$PROFILE_DIR/session-count"
+    REFRESH_INTERVAL=${toString cfg.profileRefreshSessions}
+
+    # Cloud tier: hint if not authenticated.
+    ${lib.optionalString (cfg.tier == "cloud") ''
+      if ! ${pkgs.jq}/bin/jq -e '.anthropic.type == "oauth"' \
+          "$HOME/.pi/agent/auth.json" > /dev/null 2>&1; then
+        echo "Not logged in to Claude. Type /login inside nixadmin to authenticate."
+      fi
+    ''}
+
+    generate_profile() {
+      mkdir -p "$PROFILE_DIR"
+      ${lib.optionalString (cfg.tier == "local") ''
+        echo "Generating machine profile using local model — this may take a few minutes..."
+      ''}
+      ${lib.optionalString (cfg.tier != "local") ''
+        echo "Generating machine profile..."
+      ''}
+
+      CONTEXT=$(
+        echo "=== NixOS config ==="
+        ${pkgs.coreutils}/bin/cat \
+          ${cfg.flakeDir}/flake.nix \
+          ${cfg.flakeDir}/hosts/*/default.nix \
+          ${cfg.flakeDir}/modules/nixos/common.nix 2>/dev/null | head -300
+        echo ""
+        echo "=== Installed packages ==="
+        nixadmin-apps 2>/dev/null
+        echo ""
+        echo "=== Network interfaces ==="
+        ${pkgs.iproute2}/bin/ip link show 2>/dev/null
+        echo ""
+        echo "=== CPU ==="
+        ${pkgs.util-linux}/bin/lscpu 2>/dev/null | grep -E "^Model name|^CPU\(s\)|^Architecture"
+        echo ""
+        echo "=== Disk ==="
+        ${pkgs.coreutils}/bin/df -h 2>/dev/null | grep -v tmpfs
+      )
+
+      pi --print --no-session --no-tools \
+        --model ${piModel} \
+        --system-prompt "You generate machine profiles for a NixOS sysadmin AI. Be concise and factual. Plain text only, no markdown headers or bullets." \
+        "Generate a machine profile (max 300 words) from the system info below. Cover: exact network interface names, CPU/GPU, key installed apps, filesystem layout, and any non-obvious machine-specific details an AI sysadmin should know.
+
+$CONTEXT" > "$PROFILE_FILE" 2>/dev/null
+
+      if [ -s "$PROFILE_FILE" ]; then
+        echo "Machine profile ready."
+      else
+        echo "Profile generation failed, continuing without profile."
+        rm -f "$PROFILE_FILE"
+      fi
+    }
+
+    # Generate profile on first launch.
+    if [ ! -f "$PROFILE_FILE" ]; then
+      generate_profile
     fi
+
+    # Increment session counter; offer refresh every N sessions.
+    COUNT=$(${pkgs.coreutils}/bin/cat "$SESSION_FILE" 2>/dev/null || echo 0)
+    COUNT=$((COUNT + 1))
+    echo "$COUNT" > "$SESSION_FILE"
+    if [ "$COUNT" -gt 0 ] && [ $(( COUNT % REFRESH_INTERVAL )) -eq 0 ]; then
+      read -p "Machine profile is $COUNT sessions old. Refresh? [y/N] " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        generate_profile
+      fi
+    fi
+
+    # Inject profile into system prompt if available.
+    APPEND_ARGS=()
+    if [ -s "$PROFILE_FILE" ]; then
+      APPEND_ARGS=(--append-system-prompt "$(${pkgs.coreutils}/bin/cat "$PROFILE_FILE")")
+    fi
+
     cd ${cfg.flakeDir}
-    exec pi --model anthropic/${cfg.cloud.model}
+    exec pi --model ${piModel} "''${APPEND_ARGS[@]}"
   '';
 
-  # Derive the nixadmin alias from the tier setting.
-  # cloud  → pi's built-in Anthropic OAuth provider (Claude Pro/Max, no API tokens).
-  #          Run /login inside pi once to authenticate.
-  # remote → OpenAI-compatible API at cfg.remote.baseUrl (LAN server, VPS, etc.)
-  # local  → local Ollama container (full privacy, always available).
-  nixadminAlias =
-    if cfg.tier == "cloud"  then "${cloudWrapper}"
-    else if cfg.tier == "remote" then "cd ${cfg.flakeDir} && pi --model remote/${cfg.remote.model}"
-    else "cd ${cfg.flakeDir} && pi --model ollama/${cfg.local.model}";
+  nixadminAlias = "${nixadminWrapper}";
 
   # Generate models.json for pi. The anthropic (cloud) provider is built-in
   # so it is never listed here — credentials come from /login OAuth flow.
@@ -223,6 +297,12 @@ in {
       type    = lib.types.str;
       default = "qwen3-tool:latest";
       description = "Local Ollama model to use.";
+    };
+
+    profileRefreshSessions = lib.mkOption {
+      type    = lib.types.int;
+      default = 10;
+      description = "Prompt to refresh the machine profile every N sessions.";
     };
   };
 
