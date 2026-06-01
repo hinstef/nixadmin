@@ -112,13 +112,24 @@ while True:
     flakeIgnore = [ "E501" "E221" ];
   } (builtins.readFile ./helper/nixadmin-helper.py);
 
+  # For the cloud tier, wrap pi with an auth check so users get a clear hint
+  # when they haven't run /login yet rather than a cryptic API error.
+  cloudWrapper = pkgs.writeShellScript "nixadmin-cloud" ''
+    if ! ${pkgs.jq}/bin/jq -e '.anthropic.type == "oauth"' \
+        "$HOME/.pi/agent/auth.json" > /dev/null 2>&1; then
+      echo "Not logged in to Claude. Type /login inside nixadmin to authenticate."
+    fi
+    cd ${cfg.flakeDir}
+    exec pi --model anthropic/${cfg.cloud.model}
+  '';
+
   # Derive the nixadmin alias from the tier setting.
   # cloud  → pi's built-in Anthropic OAuth provider (Claude Pro/Max, no API tokens).
   #          Run /login inside pi once to authenticate.
   # remote → OpenAI-compatible API at cfg.remote.baseUrl (LAN server, VPS, etc.)
   # local  → local Ollama container (full privacy, always available).
   nixadminAlias =
-    if cfg.tier == "cloud"  then "cd ${cfg.flakeDir} && pi --model anthropic/${cfg.cloud.model}"
+    if cfg.tier == "cloud"  then "${cloudWrapper}"
     else if cfg.tier == "remote" then "cd ${cfg.flakeDir} && pi --model remote/${cfg.remote.model}"
     else "cd ${cfg.flakeDir} && pi --model ollama/${cfg.local.model}";
 
