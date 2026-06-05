@@ -366,8 +366,15 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
       APPEND_ARGS=(--append-system-prompt "$(${pkgs.coreutils}/bin/cat "$PROFILE_FILE")")
     fi
 
+    # Pick model: `nixadmin local` overrides to on-device Ollama.
+    MODEL=${piModel}
+    if [ "''${1:-}" = "local" ]; then
+      MODEL="ollama/${cfg.local.model}"
+      shift
+    fi
+
     cd ${cfg.flakeDir}
-    exec pi --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
+    exec pi --model "$MODEL" --thinking off "''${APPEND_ARGS[@]}"
   '';
 
   nixadminAlias = "${nixadminWrapper}";
