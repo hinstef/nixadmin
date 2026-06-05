@@ -547,23 +547,34 @@ in {
           # Remove any stale container from a previous unclean exit.
           "-${pkgs.podman}/bin/podman rm -f nixadmin-ollama"
         ];
-        ExecStart     = "${startScript}";
-        # Pre-load the local model after Ollama is up so the first nixadmin --local
-        # is instant. Runs in background so it doesn't block service readiness.
-        ExecStartPost = pkgs.writeShellScript "nixadmin-ollama-preload" ''
-          (
-            until ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/ > /dev/null 2>&1; do
-              sleep 1
-            done
-            ${pkgs.curl}/bin/curl -sf -X POST http://127.0.0.1:11434/api/generate \
-              --max-time 1200 \
-              -d '{"model":"${cfg.local.model}","prompt":"","keep_alive":"-1"}' \
-              > /dev/null 2>&1
-          ) &
-        '';
+        ExecStart  = "${startScript}";
         ExecStop   = "${pkgs.podman}/bin/podman stop nixadmin-ollama";
         Restart    = "on-failure";
         RestartSec = "5s";
+      };
+    };
+
+    # Oneshot service — waits for Ollama then pre-loads the local model into GPU memory.
+    # Runs as its own systemd unit so it isn't killed when the start script exits.
+    systemd.user.services.nixadmin-ollama-preload = {
+      description = "Pre-load nixadmin local model into GPU memory";
+      after    = [ "nixadmin-ollama.service" ];
+      requires = [ "nixadmin-ollama.service" ];
+      wantedBy = [ "nixadmin-ollama.service" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
+        ExecStart = pkgs.writeShellScript "nixadmin-ollama-preload" ''
+          until ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/ > /dev/null 2>&1; do
+            sleep 2
+          done
+          ${pkgs.curl}/bin/curl -sf -X POST http://127.0.0.1:11434/api/generate \
+            --max-time 1200 \
+            -d '{"model":"${cfg.local.model}","prompt":"","keep_alive":"-1"}' \
+            > /dev/null 2>&1
+        '';
       };
     };
 
