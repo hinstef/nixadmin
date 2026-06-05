@@ -367,7 +367,7 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     fi
 
     cd ${cfg.flakeDir}
-    exec ${nixadminRpc}/bin/nixadmin-rpc --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
+    exec pi --model ${piModel} --thinking off "''${APPEND_ARGS[@]}"
   '';
 
   nixadminAlias = "${nixadminWrapper}";
