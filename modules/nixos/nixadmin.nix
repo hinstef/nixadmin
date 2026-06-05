@@ -50,6 +50,7 @@ let
       --env=SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
       --env=HOME=/root \
       --env=OLLAMA_VULKAN=1 \
+      --env=OLLAMA_IGPU_ENABLE=1 \
       --env=VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json \
       --volume=/run/opengl-driver:/run/opengl-driver:ro \
       --volume=/nix/store:/nix/store:ro \
