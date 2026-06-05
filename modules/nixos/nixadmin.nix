@@ -52,9 +52,11 @@ let
       --env=OLLAMA_VULKAN=1 \
       --env=OLLAMA_IGPU_ENABLE=1 \
       --env=VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json \
+      --env=LLAMA_ARG_NO_WARMUP=true \
       --volume=/run/opengl-driver:/run/opengl-driver:ro \
       --volume=/nix/store:/nix/store:ro \
       --volume=/run/nixadmin-helper.sock:/run/nixadmin-helper.sock \
+      --volume=nixadmin-shader-cache:/root/.cache \
       --tmpfs=/tmp \
       --device=/dev/dri \
       --network=host \
