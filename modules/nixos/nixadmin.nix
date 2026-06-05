@@ -115,9 +115,16 @@ import sys, json, subprocess, threading, time, signal, shutil
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+def model_label(args):
+    for i, a in enumerate(args):
+        if a == "--model" and i + 1 < len(args):
+            return args[i + 1].split("/")[-1]
+    return ""
+
 def main():
     pi = shutil.which("pi") or "pi"
     cmd = [pi, "--mode", "rpc"] + sys.argv[1:]
+    label = model_label(sys.argv[1:])
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -239,7 +246,8 @@ def main():
     try:
         while proc.poll() is None:
             try:
-                line = input("\nnixadmin> ").strip()
+                prompt = ("\nnixadmin [" + label + "]> ") if label else "\nnixadmin> "
+                line = input(prompt).strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not line:
