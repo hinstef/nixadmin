@@ -51,8 +51,8 @@ let
       --env=HOME=/root \
       --env=OLLAMA_VULKAN=1 \
       --env=OLLAMA_IGPU_ENABLE=1 \
+      --env=OLLAMA_LOAD_TIMEOUT=20m \
       --env=VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json \
-      --env=LLAMA_ARG_NO_WARMUP=true \
       --volume=/run/opengl-driver:/run/opengl-driver:ro \
       --volume=/nix/store:/nix/store:ro \
       --volume=/run/nixadmin-helper.sock:/run/nixadmin-helper.sock \
@@ -556,7 +556,7 @@ in {
               sleep 1
             done
             ${pkgs.curl}/bin/curl -sf -X POST http://127.0.0.1:11434/api/generate \
-              --max-time 300 \
+              --max-time 1200 \
               -d '{"model":"${cfg.local.model}","prompt":"","keep_alive":"-1"}' \
               > /dev/null 2>&1
           ) &
