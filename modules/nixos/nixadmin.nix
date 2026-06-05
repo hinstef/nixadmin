@@ -545,7 +545,20 @@ in {
           # Remove any stale container from a previous unclean exit.
           "-${pkgs.podman}/bin/podman rm -f nixadmin-ollama"
         ];
-        ExecStart  = "${startScript}";
+        ExecStart     = "${startScript}";
+        # Pre-load the local model after Ollama is up so the first nixadmin --local
+        # is instant. Runs in background so it doesn't block service readiness.
+        ExecStartPost = pkgs.writeShellScript "nixadmin-ollama-preload" ''
+          (
+            until ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/ > /dev/null 2>&1; do
+              sleep 1
+            done
+            ${pkgs.curl}/bin/curl -sf -X POST http://127.0.0.1:11434/api/generate \
+              --max-time 300 \
+              -d '{"model":"${cfg.local.model}","prompt":"","keep_alive":"-1"}' \
+              > /dev/null 2>&1
+          ) &
+        '';
         ExecStop   = "${pkgs.podman}/bin/podman stop nixadmin-ollama";
         Restart    = "on-failure";
         RestartSec = "5s";
