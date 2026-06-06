@@ -109,14 +109,117 @@ while True:
             sys.exit(msg["exit"])
 '';
 
-  # RPC wrapper — replaces the pi TUI with a clean prompt + spinner.
-  # Shows only the final assistant reply; suppresses tool call blocks and thinking.
+  # Toolkit module — pure data + classify/prefetch/augment helpers.
+  # No UI, no Nix deps. Imported by nixadmin-rpc. Extend TOOLKIT to add new intents.
+  nixadminToolkit = pkgs.writeTextFile {
+    name    = "nixadmin-toolkit";
+    destination = "/lib/nixadmin_toolkit.py";
+    text    = ''
+import subprocess, threading, json, urllib.request
+
+TOOLKIT = [
+    {
+        "name": "apps",
+        "description": "installed applications, packages, software, programs, tools, what is installed",
+        "commands": ["nixadmin-apps"],
+    },
+    {
+        "name": "network",
+        "description": "wifi, wireless, network, internet, connectivity, online, IP address, ping, DNS, ethernet, interface",
+        "commands": ["ip link show", "nmcli device status", "ping -c 2 8.8.8.8"],
+    },
+    {
+        "name": "disk",
+        "description": "disk space, storage, free space, full, filesystem, drive, partition, mount",
+        "commands": ["df -h", "lsblk"],
+    },
+    {
+        "name": "services",
+        "description": "running services, systemd, daemons, failed units, background processes, startup",
+        "commands": ["systemctl --failed --no-pager", "systemctl --user --failed --no-pager"],
+    },
+]
+
+
+def classify(query, model, ollama_url="http://localhost:11434"):
+    descriptions = "\n".join("- " + t["name"] + ": " + t["description"] for t in TOOLKIT)
+    prompt = (
+        "Which categories match this question? "
+        "Reply with ONLY a comma-separated list of matching names, or the word 'none'.\n\n"
+        "Categories:\n" + descriptions + "\n\nQuestion: " + query
+    )
+    try:
+        data = json.dumps({
+            "model": model, "prompt": prompt, "stream": False,
+            "options": {"num_predict": 20, "temperature": 0},
+        }).encode()
+        req = urllib.request.Request(
+            ollama_url + "/api/generate", data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            reply = json.loads(r.read())["response"].strip().lower()
+        return [t for t in TOOLKIT if t["name"] in reply]
+    except Exception:
+        return []
+
+
+def _run_cmd(cmd):
+    try:
+        out = subprocess.check_output(
+            cmd, shell=True, stderr=subprocess.STDOUT, timeout=15, text=True
+        )
+        return out.strip()
+    except subprocess.CalledProcessError as e:
+        return (e.output or "").strip() or "(exit " + str(e.returncode) + ")"
+    except Exception as e:
+        return "(error: " + str(e) + ")"
+
+
+def prefetch(toolkits):
+    if not toolkits:
+        return ""
+    cmds = [c for t in toolkits for c in t["commands"]]
+    results = {}
+    lock = threading.Lock()
+
+    def run(cmd):
+        out = _run_cmd(cmd)
+        with lock:
+            results[cmd] = out
+
+    threads = [threading.Thread(target=run, args=(c,)) for c in cmds]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=20)
+    return "\n\n".join("$ " + c + "\n" + results.get(c, "(timeout)") for c in cmds)
+
+
+def augment(query, context):
+    if not context:
+        return query
+    return (
+        query + "\n\n"
+        "[Live system data — use this to answer directly, do not run these commands again:]\n"
+        + context
+    )
+'';
+  };
+
+  # RPC wrapper — terminal frontend over nixadmin_toolkit + pi RPC.
+  # classify() + prefetch() run behind the spinner before each pi call.
   nixadminRpc = pkgs.writers.writePython3Bin "nixadmin-rpc" {
     libraries  = [];
-    flakeIgnore = [ "E501" "E221" "E302" "E303" "E401" "E305" ];
+    flakeIgnore = [ "E501" "E221" "E302" "E303" "E401" "E305" "E402" ];
   } ''
-import sys, json, subprocess, threading, time, signal, shutil
+import sys
+sys.path.insert(0, "${nixadminToolkit}/lib")
+from nixadmin_toolkit import classify, prefetch, augment
 
+import json, subprocess, threading, time, signal, shutil
+
+LOCAL_MODEL = "${cfg.local.model}"
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def model_label(args):
@@ -204,6 +307,8 @@ def main():
                 streaming[0] = False
                 if not ev.get("willRetry"):
                     turn_done.set()
+            elif t == "response" and ev.get("id") == "init-probe":
+                pi_ready.set()
             elif t == "extension_ui_request":
                 spin_end()
                 method = ev.get("method", "")
@@ -237,8 +342,14 @@ def main():
                         val = options[0] if options else ""
                     send({"type": "extension_ui_response", "id": rid, "value": val})
 
+    pi_ready = threading.Event()
     thr = threading.Thread(target=on_events, daemon=True)
     thr.start()
+
+    # Probe pi readiness — send get_state after 1s and wait for its response.
+    time.sleep(1)
+    send({"type": "get_state", "id": "init-probe"})
+    pi_ready.wait(timeout=5)
 
     def on_sigint(sig, frame):
         spin_end()
@@ -247,17 +358,25 @@ def main():
         sys.exit(0)
     signal.signal(signal.SIGINT, on_sigint)
 
+    prompt_str = ("\nnixadmin [" + label + "]> ") if label else "\nnixadmin> "
+
     try:
         while proc.poll() is None:
             try:
-                prompt = ("\nnixadmin [" + label + "]> ") if label else "\nnixadmin> "
-                line = input(prompt).strip()
+                line = input(prompt_str).strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not line:
                 continue
+
+            # Classify intent → pre-fetch live data → augment query — all behind spinner.
+            spin_start()
+            toolkits = classify(line, LOCAL_MODEL)
+            context  = prefetch(toolkits)
+            spin_end()
+
             turn_done.clear()
-            send({"type": "prompt", "message": line})
+            send({"type": "prompt", "message": augment(line, context)})
             turn_done.wait()
     finally:
         spin_end()
@@ -378,7 +497,7 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     fi
 
     cd ${cfg.flakeDir}
-    exec pi --model "$MODEL" --thinking off "''${APPEND_ARGS[@]}"
+    exec ${nixadminRpc}/bin/nixadmin-rpc --model "$MODEL" --thinking off "''${APPEND_ARGS[@]}"
   '';
 
   nixadminAlias = "${nixadminWrapper}";
