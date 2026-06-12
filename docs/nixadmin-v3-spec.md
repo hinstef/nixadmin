@@ -41,6 +41,10 @@ Remote   LiteLLM               (full agent, tool calling, safety-gated)
              └── self-hosted   (remote Ollama, vLLM, etc.)
 ```
 
+The local model is used **only** by the local chain (for both classify and
+summarize). The remote chain never invokes it. The two chains share no runtime
+dependency — either can be down without affecting the other.
+
 ---
 
 ## Socket Protocol
@@ -61,13 +65,19 @@ Client must check `version`. If unsupported, disconnect.
 ### Client → Daemon
 
 ```json
-{"type": "query",   "id": "abc", "text": "is my wifi working?"}
-{"type": "query",   "id": "abc", "text": "...", "chain": "local"}
+{"type": "query",   "id": "abc", "session": "s1", "text": "is my wifi working?"}
+{"type": "query",   "id": "abc", "session": "s1", "text": "...", "chain": "local"}
 {"type": "cancel",  "id": "abc"}
 {"type": "respond", "id": "abc", "confirmed": true}
 {"type": "respond", "id": "abc", "value": "firefox"}
 ```
 
+- `id` scopes a single request/response exchange (query → deltas → done).
+- `session` scopes a *conversation* — history is keyed by it. A client picks a
+  stable session id (terminal uses one per launch; GTK could keep one per window).
+  **v1 ignores `session` entirely** (NullHistory), but it is part of the protocol
+  now so that adding history later is not a breaking change. Omitting it is
+  allowed; the daemon treats a missing `session` as `"default"`.
 - `chain` is optional. Omit to use daemon default or module hint.
 - `respond` answers a pending `confirm` or `input` request by `id`.
   - For `confirm`: use `"confirmed": bool`
@@ -183,9 +193,18 @@ Privacy intent is never silently overridden. A module declaring `local` wins
 over any `auto` or `remote` hint from other matched modules. The user can
 override via `"chain": "remote"` in the query (level 1).
 
-**Important:** routing only controls which LLM processes the query. Prefetch
-always runs regardless — fetcher commands execute locally on the machine. The
-augmented query (with live data injected) then goes to whichever chain won.
+**Important:** routing controls both *which LLM* processes the query and *which
+mechanism* grounds it:
+
+- **local chain** → classify + prefetch (run fetcher commands, inject live data,
+  summarize). The cheap model never calls tools.
+- **remote chain** → native tool calling. The capable model decides what to run
+  via `expose_as_tool` fetchers and built-in tools. No classify, no prefetch.
+
+classify + prefetch is a **local-chain-only** mechanism. It exists because the
+cheap model can't be trusted to call tools reliably — a problem the remote model
+doesn't have. This keeps the chains fully independent: the remote chain never
+touches the local model, so it works even when Ollama is down.
 
 ---
 
@@ -225,6 +244,8 @@ Never make changes unless explicitly asked.
 ## Remote Call Chain
 
 For capable models (cloud or self-hosted). Full agentic loop with tools.
+**No classify, no prefetch** — the model grounds itself by calling tools. This
+keeps the remote chain independent of the local model / Ollama.
 
 ```
 query
@@ -232,7 +253,7 @@ query
   ▼
 assemble messages:
   [system prompt + context]
-  + history.recent(20)
+  + history.recent(session, 20)        # [] in v1 (NullHistory)
   + [{"role": "user", "content": query}]
   │
   ▼
@@ -243,27 +264,50 @@ LiteLLM acompletion(stream=True, tools=exposed_tools)
   └── tool_call → safety_gate → execute → append result → loop
 ```
 
-### Tool exposure
+### Tool exposure & the argument rule
 
-Only fetchers with `expose_as_tool=True` are offered to the remote agent.
-The safety gate in the daemon enforces this — the LLM cannot call arbitrary
-commands.
+**The model never supplies a shell string.** There is no `run_command(cmd)` tool.
+This is the core of the tool security model — it closes the arbitrary-execution
+hole that a free-form command tool would open.
 
-Built-in privileged tools (always available to remote chain):
-- `nixadmin_rebuild(action)` — routes through helper socket, requires confirm
-- `edit_nix_file(path, old, new)` — requires git stash + test + confirm
+Tools come in exactly two shapes:
+
+1. **Fetcher-derived tools** — a fetcher with `expose_as_tool=True` becomes a
+   zero-argument tool. The command is fixed at module-definition time. The model
+   chooses *which* tool to invoke, never *what command* it runs.
+
+   ```
+   fetcher  cmd="nmcli -f active,ssid,signal,state dev wifi"  expose_as_tool=True
+   →  tool  name="network_wifi_status"  parameters={}   # no args
+   ```
+
+2. **Built-in structured tools** — fixed name, typed/enum parameters validated
+   against a schema by the daemon before execution. Never free-form.
+
+   ```
+   nixadmin_rebuild(action: "test" | "switch" | "boot" | "revert")
+   ```
+
+   The daemon rejects any argument outside the schema. A model that emits
+   `action: "rm -rf /"` gets a validation error, not an execution.
+
+Write tools (file mutation) are deferred to v2 — see "What's Left Out".
 
 ### Safety gate (baked in, not bypassable)
 
-Every action passes through the gate before execution:
+Every privileged tool call passes through the gate in daemon code — not the LLM's
+system prompt. In v1 the only privileged tool is `nixadmin_rebuild`:
 
-1. `git stash push` before any file edit
-2. `nixadmin_rebuild test` before any `switch`
-3. `confirm` sent to client, wait for `respond: true`
-4. Execute
-5. On failure: `git stash pop`, report error
+1. `switch` / `boot` require a `confirm` → wait for `respond: confirmed=true`
+2. `switch` is refused unless a `test` succeeded earlier in the same session
+3. Execute via the helper socket
+4. On failure: report the error verbatim, never auto-retry
 
-The gate is in daemon code, not in the LLM's system prompt.
+`test` and `revert` are non-destructive and run without confirm.
+
+Write tools (file mutation) and their `git stash` / worktree safety flow are
+deferred to v2 (see "What's Left Out"). The gate is designed so that adding a
+write tool means adding a gate rule, not threading safety through prompts.
 
 ---
 
@@ -323,13 +367,17 @@ If no clients connected: send desktop notification via
 
 v1: `NullHistory` — stateless, no persistence.
 
-Interface (defined now, implemented later):
+Interface (defined now, implemented later). Keyed by `session` so concurrent
+clients (terminal + GTK) don't interleave into one conversation:
 
 ```python
 class HistoryBackend(Protocol):
-    async def append(self, role: str, content: str) -> None: ...
-    async def recent(self, n: int) -> list[dict]: ...
+    async def append(self, session: str, role: str, content: str) -> None: ...
+    async def recent(self, session: str, n: int) -> list[dict]: ...
 ```
+
+`NullHistory` implements both as no-ops / empty lists, so the remote chain's
+`history.recent(session, 20)` is safe to call in v1 and simply returns `[]`.
 
 Configured via NixOS module option:
 
@@ -339,7 +387,6 @@ services.nixadmin.history = "null";   # default
 ```
 
 Implementations are built-in (not pip entry points).
-History is per-daemon-session in v1 (cleared on restart).
 
 ---
 
