@@ -126,7 +126,7 @@ TOOLKIT = [
     {
         "name": "network",
         "description": "wifi, wireless, network, internet, connectivity, online, IP address, ping, DNS, ethernet, interface",
-        "commands": ["nmcli -f active,device,state,connection dev status", "ping -c 2 8.8.8.8"],
+        "commands": ["nmcli -f active,ssid,signal,state dev wifi", "ping -c 2 8.8.8.8"],
     },
     {
         "name": "disk",
@@ -521,8 +521,9 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     # pre-fetched data. The full APPEND_SYSTEM.md is too heavy for a 3B model.
     if [[ "$MODEL" == ollama/* ]]; then
       APPEND_ARGS=(--system-prompt "You are a sysadmin assistant. The user is non-technical.
-RULE: Reply in ONE short sentence. No lists, no caveats, no follow-up suggestions.
-Example: 'Yes, your WiFi is connected and working.' or 'Firefox, Chrome, and Spotify are installed.'
+STRICT: ONE sentence. Stop after the period. No lists, no caveats, no extra context, no offers to help further.
+Good: 'Yes, your WiFi is connected and the internet is working.'
+Bad: anything longer than one sentence.
 Use the inline system data to answer. Never mention where the data came from.
 Never make changes unless explicitly asked.")
     fi
