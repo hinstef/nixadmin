@@ -64,11 +64,14 @@ Client must check `version`. If unsupported, disconnect.
 {"type": "query",   "id": "abc", "text": "is my wifi working?"}
 {"type": "query",   "id": "abc", "text": "...", "chain": "local"}
 {"type": "cancel",  "id": "abc"}
-{"type": "respond", "id": "abc", "value": true}
+{"type": "respond", "id": "abc", "confirmed": true}
+{"type": "respond", "id": "abc", "value": "firefox"}
 ```
 
 - `chain` is optional. Omit to use daemon default or module hint.
-- `respond` answers a `confirm` or `input` request from the daemon.
+- `respond` answers a pending `confirm` or `input` request by `id`.
+  - For `confirm`: use `"confirmed": bool`
+  - For `input`: use `"value": string`
 
 ### Daemon → Client
 
@@ -124,9 +127,10 @@ class Monitor:
 
 @dataclass
 class ContextProvider:
-    name:  str
-    get:   Callable[[], Awaitable[str]]   # async, called lazily on first query
-    chain: Literal["remote", "both"] = "remote"  # local gets minimal prompt
+    name:             str
+    get:              Callable[[], Awaitable[str]]   # async
+    chain:            Literal["remote", "both"] = "remote"
+    refresh_interval: int | None = None   # seconds; None = once per daemon lifetime
 
 @dataclass
 class Module:
@@ -265,22 +269,28 @@ The gate is in daemon code, not in the LLM's system prompt.
 
 ## Context Providers
 
-Contribute to the remote system prompt. Lazy — called on first query, not at
-daemon startup. Async.
+Contribute to the remote system prompt. Lazy — called on first query, cached,
+re-fetched on `refresh_interval`. Async.
 
 ```python
 async def machine_profile() -> str:
     # runs nixadmin-apps, lscpu, ip link, df -h
     # calls remote LLM once to summarise into ~200 words
-    # cached in memory for the daemon lifetime
     ...
 
 MACHINE_PROFILE = ContextProvider(
     name="machine-profile",
     get=machine_profile,
     chain="remote",
+    refresh_interval=3600,   # re-generate every hour
 )
 ```
+
+The built-in `MachineProfileProvider` also watches the flake dir for git changes
+(`git diff HEAD`) — if the config changed since last generation, it refreshes
+immediately rather than waiting for the interval.
+
+Future: switch from polling to inotify on the flake dir for instant invalidation.
 
 System prompt assembly (remote chain):
 ```
@@ -382,9 +392,33 @@ services.nixadmin = {
 
 ---
 
+## Daemon Startup & Chain Readiness
+
+The daemon starts and accepts client connections immediately. Chains become ready
+independently — clients are informed via the `hello` message:
+
+```json
+{"type": "hello", "version": 1, "chains": ["local", "remote"],
+ "ready": {"local": false, "remote": true}, "modules": [...]}
+```
+
+**Local chain** depends on Ollama being up and the model loaded. The daemon
+polls `GET /api/ps` with exponential backoff until the model appears. Queries
+on the local chain are queued until ready.
+
+**Remote chain** depends on the configured backend (Hermes proxy or direct API)
+being reachable. Same polling approach. If a remote API key is set but the
+endpoint is unreachable, the chain stays unready and the client is told.
+
+Clients receive a `{"type": "ready", "chain": "local"}` push when a chain
+becomes available.
+
+---
+
 ## What's Left Out of v1
 
 - Conversation history persistence (NullHistory only)
+- Write tools / file mutation tools (edit_nix_file etc.) — safety design deferred
 - Desktop notification fallback when no client connected (stub only)
 - Module hot-reload (restart daemon after nixos-rebuild switch)
 - Web UI / remote socket access
