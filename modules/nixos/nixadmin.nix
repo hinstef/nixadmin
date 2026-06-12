@@ -522,7 +522,7 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     if [[ "$MODEL" == ollama/* ]]; then
       APPEND_ARGS=(--system-prompt "You are a concise NixOS sysadmin assistant. The user is non-technical.
 Answer questions only. Never make changes unless explicitly asked.
-Live system data will be provided inline — summarize it plainly, do not re-run commands.
+Live system data will be provided inline — use it to answer directly. Never mention the data source or how you got the data.
 Hard limits: never touch hardware-configuration.nix, never skip test before switch.")
     fi
 
