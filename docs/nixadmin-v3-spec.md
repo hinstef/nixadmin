@@ -18,7 +18,7 @@ the daemon.
 │                   nixadmin daemon                    │
 │                                                      │
 │  module registry   (entry_points: nixadmin.modules) │
-│  context assembly  (system prompt built at startup) │
+│  context assembly  (lazy, cached, refreshed on TTL) │
 │  interceptor       (classify → prefetch → augment)  │
 │  router            (local | remote, 3-level)        │
 │  safety gate       (baked in, not bypassable)       │
@@ -53,14 +53,23 @@ Newline-delimited JSON over a Unix socket at `$XDG_RUNTIME_DIR/nixadmin.sock`.
 
 ### Handshake
 
-On connect the daemon immediately sends:
+On connect the daemon immediately sends a single `hello`:
 
 ```json
-{"type": "hello", "version": 1, "chains": ["local", "remote"],
- "modules": ["apps", "network", "disk", "services"], "default_chain": "remote"}
+{"type": "hello", "version": 1,
+ "chains": ["local", "remote"],
+ "ready": {"local": false, "remote": true},
+ "default_chain": "remote",
+ "modules": ["apps", "network", "disk", "services"]}
 ```
 
-Client must check `version`. If unsupported, disconnect.
+- `version` — protocol version. Client must check it; disconnect if unsupported.
+- `chains` — which chains this daemon is configured for.
+- `ready` — per-chain readiness at connect time. A chain may still be warming up
+  (Ollama loading, remote endpoint unreachable). The client receives a `ready`
+  push when a not-yet-ready chain comes up (see *Daemon Startup & Chain Readiness*).
+- `default_chain` — used when a query omits `chain`.
+- `modules` — loaded module names, for display/debugging.
 
 ### Client → Daemon
 
@@ -442,12 +451,8 @@ services.nixadmin = {
 ## Daemon Startup & Chain Readiness
 
 The daemon starts and accepts client connections immediately. Chains become ready
-independently — clients are informed via the `hello` message:
-
-```json
-{"type": "hello", "version": 1, "chains": ["local", "remote"],
- "ready": {"local": false, "remote": true}, "modules": [...]}
-```
+independently — the `hello` message carries the initial `ready` map (see *Socket
+Protocol → Handshake*), and a `ready` push follows when a chain later comes up.
 
 **Local chain** depends on Ollama being up and the model loaded. The daemon
 polls `GET /api/ps` with exponential backoff until the model appears. Queries
