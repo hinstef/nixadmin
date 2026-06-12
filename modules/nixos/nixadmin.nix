@@ -496,6 +496,27 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
       shift
     fi
 
+    # When using local model: wait for it to be loaded into GPU before starting.
+    if [[ "$MODEL" == ollama/* ]]; then
+      LOCAL_READY=0
+      if ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/api/ps 2>/dev/null \
+          | ${pkgs.gnugrep}/bin/grep -q "${cfg.local.model}"; then
+        LOCAL_READY=1
+      fi
+      if [ "$LOCAL_READY" -eq 0 ]; then
+        if ! ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/ > /dev/null 2>&1; then
+          echo "Local model is starting up — waiting for Ollama..."
+        else
+          echo "Local model is loading into GPU memory — this may take a minute..."
+        fi
+        until ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/api/ps 2>/dev/null \
+            | ${pkgs.gnugrep}/bin/grep -q "${cfg.local.model}"; do
+          sleep 2
+        done
+        echo "Model ready."
+      fi
+    fi
+
     cd ${cfg.flakeDir}
     exec ${nixadminRpc}/bin/nixadmin-rpc --model "$MODEL" --thinking off "''${APPEND_ARGS[@]}"
   '';
