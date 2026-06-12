@@ -167,6 +167,22 @@ A user or client can always escalate: sending `"chain": "remote"` on a module
 that declares `routing: "local"` is allowed — the user is making an informed
 choice.
 
+### Routing collision — multiple modules match
+
+When a query matches modules with different routing hints, the rule is:
+
+```
+local > auto > remote
+```
+
+Privacy intent is never silently overridden. A module declaring `local` wins
+over any `auto` or `remote` hint from other matched modules. The user can
+override via `"chain": "remote"` in the query (level 1).
+
+**Important:** routing only controls which LLM processes the query. Prefetch
+always runs regardless — fetcher commands execute locally on the machine. The
+augmented query (with live data injected) then goes to whichever chain won.
+
 ---
 
 ## Local Call Chain
