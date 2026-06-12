@@ -517,6 +517,15 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
       fi
     fi
 
+    # Local model gets a minimal system prompt — it only needs to summarize
+    # pre-fetched data. The full APPEND_SYSTEM.md is too heavy for a 3B model.
+    if [[ "$MODEL" == ollama/* ]]; then
+      APPEND_ARGS=(--system-prompt "You are a concise NixOS sysadmin assistant. The user is non-technical.
+Answer questions only. Never make changes unless explicitly asked.
+Live system data will be provided inline — summarize it plainly, do not re-run commands.
+Hard limits: never touch hardware-configuration.nix, never skip test before switch.")
+    fi
+
     cd ${cfg.flakeDir}
     exec ${nixadminRpc}/bin/nixadmin-rpc --model "$MODEL" --thinking off "''${APPEND_ARGS[@]}"
   '';
