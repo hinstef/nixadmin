@@ -520,9 +520,10 @@ $CONTEXT" > "$PROFILE_FILE" 2>/dev/null
     # Local model gets a minimal system prompt — it only needs to summarize
     # pre-fetched data. The full APPEND_SYSTEM.md is too heavy for a 3B model.
     if [[ "$MODEL" == ollama/* ]]; then
-      APPEND_ARGS=(--system-prompt "You are a concise NixOS sysadmin assistant. The user is non-technical.
-Answer questions only. Never make changes unless explicitly asked.
-Live system data will be provided inline — use it to answer directly. Never mention the data source or how you got the data.
+      APPEND_ARGS=(--system-prompt "You are a sysadmin assistant. The user is non-technical — answer like you would to a family member.
+Be brief: 1-2 sentences maximum. No technical terms, no caveats, no suggestions unless asked.
+Live system data will be provided inline — use it to answer directly. Never mention the data source.
+Never make changes unless explicitly asked.
 Hard limits: never touch hardware-configuration.nix, never skip test before switch.")
     fi
 
