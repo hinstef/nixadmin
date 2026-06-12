@@ -146,12 +146,12 @@ def classify(query, model, ollama_url="http://localhost:11434"):
     prompt = (
         "Which categories match this question? "
         "Reply with ONLY a comma-separated list of matching names, or the word 'none'.\n\n"
-        "Categories:\n" + descriptions + "\n\nQuestion: " + query + "\n/no_think"
+        "Categories:\n" + descriptions + "\n\nQuestion: " + query
     )
     try:
         data = json.dumps({
             "model": model, "prompt": prompt, "stream": False,
-            "options": {"num_predict": 20, "temperature": 0, "think": False},
+            "options": {"num_predict": 20, "temperature": 0},
         }).encode()
         req = urllib.request.Request(
             ollama_url + "/api/generate", data=data,
