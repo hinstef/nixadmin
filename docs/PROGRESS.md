@@ -34,11 +34,11 @@ Pick the first unchecked item.
 - [x] `registry.py` — `load_modules()`: builtins + entry-point discovery, spec_version gating, name-collision guard
 - [x] `builtins/` — apps, network, disk, services (each a `manifest`)
 
-### Core services — IN PROGRESS
+### Core services — DONE
 - [x] `history.py` — HistoryBackend Protocol + NullHistory + factory
 - [x] `session.py` — SessionState (scratch, incl. last_test_ok) + per-session lock (one in-flight)
 - [x] `prefetch.py` — parallel fetcher exec (asyncio.to_thread), grounding guard
-- [ ] `routing.py` — deterministic mutation matcher + two-stage resolve (pure, DI'd)
+- [x] `routing.py` — deterministic mutation matcher + two-stage resolve (pure, DI'd)
 
 ### LLM backends — TODO
 - [ ] `llm/local.py` — Ollama httpx: classify (timeout-guarded) + summarize stream
