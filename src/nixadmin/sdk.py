@@ -31,6 +31,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
+from nixadmin.errors import ModuleError
+
 #: ABI version of this module interface. Bump when the dataclasses below change
 #: shape in a backward-incompatible way. The daemon skips modules whose
 #: ``spec_version`` does not match, with a warning instead of a crash.
@@ -66,6 +68,15 @@ class Fetcher:
     expose_as_tool: bool = False
     """Offer this fetcher to the remote agent as a callable tool."""
 
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ModuleError("Fetcher.name must be non-empty")
+        if self.expose_as_tool and not self.description:
+            raise ModuleError(
+                f"Fetcher {self.name!r} is exposed as a tool but has no description; "
+                "the remote model needs one to decide when to call it"
+            )
+
 
 @dataclass
 class Monitor:
@@ -96,6 +107,26 @@ class Monitor:
     signal: str = ""
     filter: Callable[..., bool] | None = None
     """``fn(*signal_args) -> bool``. Return True to fire an event."""
+
+    def __post_init__(self) -> None:
+        # Reject invalid source/field combinations so a bad monitor fails at load,
+        # not silently at runtime.
+        if self.source == "poll":
+            if not self.cmd:
+                raise ModuleError(f"poll monitor {self.name!r} requires a cmd")
+            if self.trigger is None:
+                raise ModuleError(f"poll monitor {self.name!r} requires a trigger")
+            if self.interface or self.signal:
+                raise ModuleError(
+                    f"poll monitor {self.name!r} must not set dbus fields (interface/signal)"
+                )
+        elif self.source == "dbus":
+            if not self.interface or not self.signal:
+                raise ModuleError(
+                    f"dbus monitor {self.name!r} requires interface and signal"
+                )
+            if self.cmd:
+                raise ModuleError(f"dbus monitor {self.name!r} must not set a cmd")
 
 
 @dataclass
@@ -135,3 +166,13 @@ class Module:
     """Routing hint. ``local`` marks the domain privacy-sensitive (keep on device);
     ``remote`` marks it as needing the capable model; ``auto`` defers to the daemon
     default. Collisions resolve ``local > auto > remote``."""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ModuleError("Module.name must be non-empty")
+        if not self.description:
+            raise ModuleError(f"Module {self.name!r} must have a description (drives the classifier)")
+        names = [f.name for f in self.fetchers]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            raise ModuleError(f"Module {self.name!r} has duplicate fetcher names: {sorted(dupes)}")

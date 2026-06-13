@@ -573,12 +573,110 @@ one at a time; the GTK app gets this guarantee for free.)
 
 ## Dependencies
 
-| Package       | Purpose                        | In nixpkgs? |
-|---------------|--------------------------------|-------------|
-| `litellm`     | remote provider abstraction    | yes (1.86)  |
-| `httpx`       | async HTTP (Ollama calls)      | yes         |
-| `dbus-fast`   | async D-Bus for monitors       | yes (4.0.4) |
-| `dbus-python` | NOT used (sync, blocks loop)   | —           |
+| Package       | Purpose                        | In nixpkgs?  |
+|---------------|--------------------------------|--------------|
+| `litellm`     | remote provider abstraction    | yes (1.86)   |
+| `httpx`       | async HTTP (Ollama calls)      | yes          |
+| `dbus-fast`   | async D-Bus for monitors       | yes (4.0.4)  |
+| `structlog`   | structured logging + contextvars | yes (25.5) |
+| `dbus-python` | NOT used (sync, blocks loop)   | —            |
+
+Only the **daemon** needs the heavy packages. `protocol.py`, `sdk.py`, `errors.py`
+and the terminal client are **stdlib-only by discipline**, so a future split into
+a light client/SDK distribution needs no code change.
+
+---
+
+## Implementation Foundations
+
+Conventions that make a from-scratch rebuild land the same architecture. These are
+contracts, not suggestions.
+
+### Package layout (`src/` layout)
+
+```
+src/nixadmin/
+  __init__.py        version only — never import heavy deps here
+  py.typed           PEP 561 marker — ships our type hints to consumers
+  protocol.py        wire contract (CLIENT api)        — stdlib only
+  sdk.py             module-author api                 — stdlib only
+  errors.py          exception hierarchy               — stdlib only
+  log.py             logging convention (structlog)
+  config.py          Config dataclass + env loading
+  registry.py        SPEC_VERSION, discovery + builtins
+  builtins/          apps.py network.py disk.py services.py
+  llm/local.py       Ollama: classify / prefetch-summarize   (heavy deps)
+  llm/remote.py      LiteLLM agent loop                       (heavy deps)
+  routing.py prefetch.py safety.py session.py
+  history.py context.py monitors.py
+  server.py          socket server + dispatch (the daemon)
+  cli.py             terminal client                   — stdlib only
+tests/               mirrors the tree
+```
+
+**Dependency direction:** contracts (`protocol`, `sdk`, `errors`) depend on
+nothing heavy; services depend on contracts; the daemon wires services. Clients
+import only `protocol`; module authors import only `sdk`.
+
+### Public-API discipline
+
+- Two public surfaces: **`protocol`** (clients) and **`sdk`** (module authors).
+  Both stdlib-only, both shipped with `py.typed`.
+- Module discovery target is a **lowercase `manifest`** object (like Flask's
+  `app`), never `MODULE` — it collides visually with the `Module` class.
+
+### Logging — `structlog`, structured, contextvars
+
+- **Libraries never configure logging.** Every module: `log = get_logger(__name__)`
+  from `nixadmin.log`. Only the daemon entrypoint calls `configure()` once.
+- Two renderers: `json` (default; journald-friendly, `journalctl -o cat | jq`)
+  and `console` (dev). One switch.
+- **Per-query context via contextvars:** `bind(query_id=…, session=…, chain=…)` at
+  dispatch; every downstream log line carries those keys without threading them
+  through signatures. `clear()` when the query ends. This is how one query is
+  traced end-to-end (router → chain → tools) in the logs.
+
+### Errors — one hierarchy
+
+All deliberate errors derive from `NixadminError`, so callers catch the family
+and the daemon maps any of them to a protocol `Error`. v1 subclasses (coarse on
+purpose; extend only when a caller must distinguish):
+
+```
+NixadminError
+├── ConfigError      invalid/missing configuration
+├── ProtocolError    malformed/unknown/incomplete wire message
+├── ModuleError      invalid manifest or load failure
+├── BackendError     LLM backend (local or remote) failure
+└── SafetyError      safety gate refusal
+```
+
+`protocol.decode()` funnels *all* malformed input (bad JSON, unknown type,
+missing field) to `ProtocolError` — callers catch one type, not three.
+
+### Fail-fast validation (modules are untrusted input)
+
+SDK dataclasses validate in `__post_init__`, raising `ModuleError` at load (the
+registry catches it and skips the module with a warning, never crashes):
+
+- `Fetcher`: non-empty `name`; `description` required when `expose_as_tool`.
+- `Monitor`: source/field coherence — `poll` needs `cmd`+`trigger` and forbids
+  dbus fields; `dbus` needs `interface`+`signal` and forbids `cmd`.
+- `Module`: non-empty `name`+`description`; fetcher names unique within the module.
+
+### Testing
+
+- **Now:** light smoke tests proving the contracts (protocol round-trips, SDK
+  declaration + validation). Not a harness — just enough to catch regressions.
+- **Later:** a proper test harness (fakes for Ollama/LiteLLM/D-Bus, an in-process
+  daemon fixture, golden conversation transcripts) once the architecture is proven.
+- `pytest` with `pythonpath = ["src"]` and `asyncio_mode = "auto"`.
+
+### Tooling
+
+`hatchling` build backend; `ruff` (E,F,I,UP,B,ASYNC) + `mypy --strict`. Console
+scripts: `nixadmin` (client), `nixadmin-daemon` (daemon). Entry-point group for
+modules: `nixadmin.modules`.
 
 ---
 

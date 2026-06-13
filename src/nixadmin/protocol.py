@@ -17,8 +17,10 @@ to parse:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import ClassVar
+
+from nixadmin.errors import ProtocolError
 
 #: Protocol version, sent in :class:`Hello`. On mismatch a client warns and
 #: proceeds (best-effort) rather than disconnecting — see the spec.
@@ -169,13 +171,24 @@ def encode(msg: Message) -> str:
 def decode(line: str) -> Message:
     """Parse one JSON line into its message dataclass.
 
-    Raises ``ValueError`` for unknown or malformed message types so callers can
-    skip junk rather than crash.
+    Raises :class:`~nixadmin.errors.ProtocolError` for any malformed input —
+    invalid JSON, unknown type, or missing required fields — so callers catch one
+    exception type and skip junk rather than crash on three different ones.
     """
-    raw = json.loads(line)
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise ProtocolError(f"invalid JSON: {e}") from e
+    if not isinstance(raw, dict):
+        raise ProtocolError(f"expected a JSON object, got {type(raw).__name__}")
+
     type_ = raw.pop("type", None)
     cls = _REGISTRY.get(type_)
     if cls is None:
-        raise ValueError(f"unknown message type: {type_!r}")
+        raise ProtocolError(f"unknown message type: {type_!r}")
+
     known = {f.name for f in fields(cls)}
-    return cls(**{k: v for k, v in raw.items() if k in known})
+    try:
+        return cls(**{k: v for k, v in raw.items() if k in known})
+    except TypeError as e:  # missing required field
+        raise ProtocolError(f"malformed {type_!r} message: {e}") from e

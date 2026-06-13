@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from nixadmin.errors import ModuleError
 from nixadmin.sdk import SPEC_VERSION, Fetcher, Module, Monitor
 
 
@@ -33,3 +36,24 @@ def test_minimal_module_defaults():
     assert m.monitors == []
     assert m.context_provider is None
     assert m.routing == "auto"
+
+
+def test_tool_fetcher_requires_description():
+    with pytest.raises(ModuleError, match="description"):
+        Fetcher(name="ps", cmd="docker ps", expose_as_tool=True)
+
+
+def test_duplicate_fetcher_names_rejected():
+    with pytest.raises(ModuleError, match="duplicate fetcher names"):
+        Module(spec_version=SPEC_VERSION, name="x", description="x",
+               fetchers=[Fetcher(name="a", cmd="true"), Fetcher(name="a", cmd="false")])
+
+
+def test_poll_monitor_needs_trigger():
+    with pytest.raises(ModuleError, match="requires a trigger"):
+        Monitor(name="m", source="poll", cmd="df /")
+
+
+def test_dbus_monitor_rejects_cmd():
+    with pytest.raises(ModuleError, match="must not set a cmd"):
+        Monitor(name="m", source="dbus", interface="org.x", signal="S", cmd="oops")

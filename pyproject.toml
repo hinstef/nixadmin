@@ -18,6 +18,7 @@ dependencies = [
     "httpx>=0.27",       # async HTTP for the local (Ollama) chain
     "litellm>=1.86",     # remote provider abstraction (Hermes, APIs, OpenRouter…)
     "dbus-fast>=4.0",    # async D-Bus for monitors
+    "structlog>=24",     # structured logging with per-query contextvars binding
 ]
 
 [project.optional-dependencies]

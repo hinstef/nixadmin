@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from nixadmin import protocol as p
+from nixadmin.errors import ProtocolError
 
 
 def test_roundtrip_every_message_type():
@@ -45,9 +46,16 @@ def test_encode_omits_unset_optionals():
     assert p.decode(line) == p.Done(id="q1")
 
 
-def test_decode_unknown_type_raises():
-    with pytest.raises(ValueError, match="unknown message type"):
-        p.decode('{"type": "nonsense", "id": "x"}')
+@pytest.mark.parametrize("bad", [
+    '{"type": "nonsense", "id": "x"}',  # unknown type
+    '{"type": "query", "id": "x"}',      # missing required field (text)
+    "not json at all",                    # invalid JSON
+    "[1, 2, 3]",                          # valid JSON, not an object
+])
+def test_decode_malformed_raises_protocol_error(bad):
+    """All malformed input funnels to one catchable exception type."""
+    with pytest.raises(ProtocolError):
+        p.decode(bad)
 
 
 def test_decode_ignores_extra_fields():
