@@ -103,15 +103,18 @@ On connect the daemon immediately sends a single `hello`:
 
 ```json
 {"type": "delta",   "id": "abc", "text": "Yes, your WiFi is connected."}
+{"type": "status",  "id": "abc", "text": "local model warming up…"}
 {"type": "done",    "id": "abc"}
 {"type": "error",   "id": "abc", "text": "backend unavailable"}
-{"type": "confirm", "id": "abc", "text": "Apply config change?"}
+{"type": "confirm", "id": "abc", "text": "Local AI is starting. Use remote instead?"}
 {"type": "input",   "id": "abc", "prompt": "Package name:"}
 {"type": "event",   "source": "monitor.service-failed",
                     "severity": "error", "text": "nginx stopped — port 80 in use"}
 ```
 
-- `delta` / `done` / `error` / `confirm` / `input` are scoped to a query `id`.
+- `delta` / `status` / `done` / `error` / `confirm` / `input` are scoped to a query `id`.
+- `status` is a **non-blocking** informational push (no response expected) — the UI
+  shows it while waiting (warming up, escalating, etc.). `confirm` is blocking.
 - `event` is unsolicited, broadcast to all connected clients.
 - Severity: `"info"` | `"warning"` | `"error"`
 - **Ordering:** while a `confirm` or `input` is pending for an `id`, the daemon
@@ -239,14 +242,33 @@ case: we answer it with product copy, not a config flag.
 3. daemon default  defaultChain
 ```
 
-**Stage 2 — reconcile with availability:**
+**Stage 2 — reconcile with availability.** Core principle: **the daemon never
+silently changes where a query runs.** Any deviation toward remote is a `confirm`
+first. A query is **pinned local** if it got there via explicit `{"chain":
+"local"}` or a privacy module hint; otherwise it is **soft local** (just the
+default).
 
 ```
-desired remote, remote ready          → remote
-desired remote, remote down           → local
-desired local,  local ready           → local
-desired local,  local cold/unavailable→ remote   (told to user)
+desired remote, remote ready              → remote
+desired remote, remote down, local ready  → confirm "use local instead?" → local
+desired local,  local ready               → local
+desired local,  local warming up:
+    status "local model warming up…"
+    pinned (explicit/privacy)             → confirm "use remote (leaves device)?"
+                                               yes → remote ;  no → wait for local
+    soft  (default only)                  → confirm "use remote instead, or wait?"
+                                               yes → remote ;  no → wait for local
 ```
+
+Privacy never leaks by accident: a pinned-local query can only reach remote
+through an explicit yes to a confirm that says the data leaves the device. If the
+user declines, the daemon waits for local (showing `status`), and errors only if
+local never comes up.
+
+> **Future:** repeated confirms are annoying. A later *remember-my-choice* policy
+> (per-session or persisted) can suppress them. This is a UX optimization only —
+> it does not change the protocol; the daemon still emits the same `confirm`, the
+> client just auto-answers from remembered policy.
 
 ### Module matching uses the local model — and that's fine
 
@@ -540,8 +562,11 @@ independently — the `hello` message carries the initial `ready` map (see *Sock
 Protocol → Handshake*), and a `ready` push follows when a chain later comes up.
 
 **Local chain** depends on Ollama being up and the model loaded. The daemon
-polls `GET /api/ps` with exponential backoff until the model appears. Queries
-on the local chain are queued until ready.
+polls `GET /api/ps` with exponential backoff until the model appears. A query
+that lands on a not-yet-ready local chain is **not** silently queued — it follows
+the Stage-2 reconcile flow (*Routing*): the client gets a `status` ("warming
+up…") and a `confirm` offering remote-vs-wait, with pinned-local queries requiring
+explicit consent before any remote fallback.
 
 **Remote chain** depends on the configured backend (Hermes proxy or direct API)
 being reachable. Same polling approach. If a remote API key is set but the
