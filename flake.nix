@@ -27,17 +27,37 @@
         default = pkgs.mkShell {
           packages = [
             (pkgs.python3.withPackages (ps: with ps; [
-              pytest pytest-asyncio structlog httpx litellm dbus-fast
+              pytest pytest-asyncio structlog httpx litellm dbus-fast mypy
             ]))
             pkgs.ruff
-            pkgs.mypy
           ];
           shellHook = ''
             export PYTHONPATH="$PWD/src:$PYTHONPATH"
-            echo "nixadmin dev shell — run: pytest -q"
+            echo "nixadmin dev shell — run: pytest -q  ·  ruff check .  ·  mypy src/nixadmin"
           '';
         };
       });
+
+      # `nix flake check` enforces all three gates in the sandbox.
+      checks = forAll (system: pkgs:
+        let
+          pyEnv = pkgs.python3.withPackages (ps: with ps; [
+            pytest pytest-asyncio structlog httpx litellm dbus-fast mypy
+          ]);
+          check = name: deps: cmd: pkgs.runCommand "nixadmin-${name}"
+            { nativeBuildInputs = deps; }
+            ''
+              cp -r ${./.} src-tree && chmod -R +w src-tree && cd src-tree
+              export PYTHONPATH="$PWD/src"
+              ${cmd}
+              touch $out
+            '';
+        in
+        {
+          pytest = check "pytest" [ pyEnv ] "pytest -q";
+          mypy = check "mypy" [ pyEnv ] "mypy src/nixadmin";
+          ruff = check "ruff" [ pkgs.ruff ] "ruff check src tests";
+        });
 
       nixosModules.default = import ./nix/module.nix self;
     };

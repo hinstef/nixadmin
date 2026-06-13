@@ -36,7 +36,7 @@ class MonitorRunner:
     def __init__(self, modules: list[Module], emit: Emit) -> None:
         self._modules = modules
         self._emit = emit
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[None]] = []
         self._poll_sem = asyncio.Semaphore(MAX_CONCURRENT_POLLS)
         self._dbus_objs: list[object] = []  # keep bus refs alive
 
@@ -125,7 +125,7 @@ def _run(cmd: str) -> str:
         return f"(error: {e})"
 
 
-def _summarize(body: list | None) -> str:
+def _summarize(body: list[object] | None) -> str:
     if not body:
         return "signal received"
     # For systemd JobRemoved the 3rd arg is the unit name — surface it if present.

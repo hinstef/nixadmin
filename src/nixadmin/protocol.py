@@ -201,6 +201,7 @@ def decode(line: str) -> Message:
 
     known = {f.name for f in fields(cls)}
     try:
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        msg: Message = cls(**{k: v for k, v in raw.items() if k in known})
     except TypeError as e:  # missing required field
         raise ProtocolError(f"malformed {type_!r} message: {e}") from e
+    return msg

@@ -29,7 +29,7 @@ def _socket_path() -> str:
 
 class Spinner:
     def __init__(self) -> None:
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         if self._task is None:

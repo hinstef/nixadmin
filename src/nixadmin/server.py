@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import os
 from pathlib import Path
+from typing import Any, cast
 
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
@@ -26,8 +27,9 @@ from nixadmin.llm import local as local_llm
 from nixadmin.llm import remote as remote_llm
 from nixadmin.monitors import MonitorRunner
 from nixadmin.registry import load_modules
-from nixadmin.routing import detect_mutation, resolve, resolve_desired_chain
+from nixadmin.routing import Chain, Decision, detect_mutation, resolve, resolve_desired_chain
 from nixadmin.safety import SafetyGate
+from nixadmin.sdk import Module
 from nixadmin.session import SessionRegistry
 
 log = logmod.get_logger(__name__)
@@ -42,7 +44,7 @@ class ClientConn:
         self.reader = reader
         self.writer = writer
         self.pending: dict[str, asyncio.Future[wire.Respond]] = {}
-        self.tasks: dict[str, asyncio.Task] = {}
+        self.tasks: dict[str, asyncio.Task[None]] = {}
 
     async def send(self, msg: wire.Message) -> None:
         self.writer.write(wire.encode(msg).encode())
@@ -145,9 +147,9 @@ class Daemon:
             task = asyncio.create_task(self._dispatch(conn, msg))
             conn.tasks[msg.id] = task
         elif isinstance(msg, wire.Cancel):
-            task = conn.tasks.get(msg.id)
-            if task:
-                task.cancel()
+            pending = conn.tasks.get(msg.id)
+            if pending:
+                pending.cancel()
         elif isinstance(msg, wire.Respond):
             conn.deliver_response(msg)
 
@@ -177,11 +179,13 @@ class Daemon:
                 logmod.clear()
 
     async def _run_query(self, conn: ClientConn, query: wire.Query) -> None:
-        explicit = query.chain if query.chain in ("local", "remote") else None
+        explicit: Chain | None = (
+            cast(Chain, query.chain) if query.chain in ("local", "remote") else None
+        )
 
         # classify only when a local chain exists and is ready (cold-start guarded
         # inside classify). On a remote-only machine this is skipped entirely.
-        matched = []
+        matched: list[Module] = []
         if self.cfg.has_local and self.local_ready:
             matched = await local_llm.classify(
                 query.text, self.modules, model=self.cfg.local_model, url=self.cfg.local_url
@@ -211,7 +215,8 @@ class Daemon:
             await self._run_remote(conn, query)
 
     async def _handle_mutation(
-        self, conn: ClientConn, query: wire.Query, desired: str, pinned: bool, matched: list
+        self, conn: ClientConn, query: wire.Query, desired: Chain, pinned: bool,
+        matched: list[Module],
     ) -> None:
         if not self.remote_ready:
             await conn.send(wire.Error(
@@ -237,8 +242,8 @@ class Daemon:
         await self._run_remote(conn, query)
 
     async def _apply_decision(
-        self, conn: ClientConn, query: wire.Query, decision
-    ) -> str | None:
+        self, conn: ClientConn, query: wire.Query, decision: Decision
+    ) -> Chain | None:
         """Resolve a routing Decision into a concrete chain, handling confirms/waits.
 
         Returns the chain to run, or None if the query is finished (declined/failed).
@@ -265,7 +270,7 @@ class Daemon:
 
     # ---- chains ----------------------------------------------------------- #
 
-    async def _run_local(self, conn: ClientConn, query: wire.Query, matched: list) -> None:
+    async def _run_local(self, conn: ClientConn, query: wire.Query, matched: list[Module]) -> None:
         context = ""
         if matched:
             from nixadmin.prefetch import prefetch
@@ -294,7 +299,7 @@ class Daemon:
         system_extra = "\n\n" + (await self.context.assemble())
         state = self.sessions.state(query.session)
 
-        async def run_tool(name: str, args: dict) -> str:
+        async def run_tool(name: str, args: dict[str, Any]) -> str:
             if name == "nixadmin_rebuild":
                 return await self.safety.rebuild(
                     args.get("action", ""), state=state,

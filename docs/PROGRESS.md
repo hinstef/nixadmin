@@ -71,12 +71,22 @@ Active services: `nixadmin-helper` (root), `nixadmin-daemon` (user),
 The one-time v2→v3 helper bootstrap was completed via a direct `sudo nixos-rebuild
 switch`; future `nixadmin-rebuild switch` works normally now.
 
+### Testing (enforced)
+- `nix flake check` runs all gates in the sandbox: **pytest (53)**, **mypy --strict
+  (clean)**, **ruff**, plus the NixOS module eval. One reproducible command.
+- Dev loop: `nix develop` then `pytest -q` / `ruff check .` / `mypy src/nixadmin`.
+- Coverage is **smoke-level + 1 daemon integration test**. Still thin on:
+  llm network paths, the remote agent tool-loop, monitors, cli, safety socket.
+  The "real harness" (fakes for Ollama/LiteLLM/D-Bus, dispatch-branch coverage)
+  is the next testing investment.
+
 ### Follow-ups (optional, not blocking — v3 fully works on the local chain)
 - Remote chain needs a Hermes proxy / API base (Claude subscription) before use.
   `defaultChain="local"` so the system works without it today.
 - machine-profile ContextProvider (interface ready, none registered).
 - desktop-notification path when no client connected (events only broadcast now).
-- real test harness (was deferred until proven — now proven).
+- the real test harness described above.
+- CI: GitHub Actions running `nix flake check`.
 
 ## v1 build COMPLETE — earlier integration notes (now done)
 1. **Wire into nixlap** — add this flake as an input in `~/workspace/nixlap/flake.nix`,

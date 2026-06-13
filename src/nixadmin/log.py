@@ -53,7 +53,8 @@ def configure(renderer: Renderer = "json", level: str = "INFO") -> None:
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a logger for a module. Safe to call before :func:`configure`."""
-    return structlog.get_logger(name)
+    logger: structlog.stdlib.BoundLogger = structlog.get_logger(name)
+    return logger
 
 
 def bind(**kwargs: Any) -> None:

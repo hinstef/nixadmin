@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import litellm
 
@@ -25,8 +26,11 @@ from nixadmin.sdk import Module
 
 log = get_logger(__name__)
 
+# A tool/message object as the OpenAI-compatible APIs shape them.
+JsonDict = dict[str, Any]
+
 # Callback the dispatcher supplies: given (tool_name, args) -> result text.
-RunTool = Callable[[str, dict], Awaitable[str]]
+RunTool = Callable[[str, JsonDict], Awaitable[str]]
 
 REMOTE_SYSTEM_PROMPT = (
     "You are an AI system administrator for a NixOS laptop. The user is non-technical.\n"
@@ -35,7 +39,7 @@ REMOTE_SYSTEM_PROMPT = (
     "Run tools silently; do not narrate what you are about to do."
 )
 
-REBUILD_TOOL = {
+REBUILD_TOOL: JsonDict = {
     "type": "function",
     "function": {
         "name": "nixadmin_rebuild",
@@ -51,9 +55,9 @@ REBUILD_TOOL = {
 }
 
 
-def build_tools(modules: list[Module]) -> list[dict]:
+def build_tools(modules: list[Module]) -> list[JsonDict]:
     """Build the tool schema list: fetcher-derived zero-arg tools + rebuild."""
-    tools: list[dict] = []
+    tools: list[JsonDict] = []
     for mod in modules:
         for f in mod.fetchers:
             if not f.expose_as_tool:
@@ -75,13 +79,13 @@ async def run(
     *,
     model: str,
     api_base: str | None,
-    tools: list[dict],
+    tools: list[JsonDict],
     run_tool: RunTool,
     history: list[Message] | None = None,
     system_extra: str = "",
 ) -> AsyncIterator[str]:
     """Drive the agent loop, streaming assistant text deltas."""
-    messages: list[dict] = [
+    messages: list[JsonDict] = [
         {"role": "system", "content": REMOTE_SYSTEM_PROMPT + system_extra},
         *(history or []),
         {"role": "user", "content": query},
@@ -89,7 +93,7 @@ async def run(
 
     while True:
         text_acc = ""
-        tool_calls: dict[int, dict] = {}
+        tool_calls: dict[int, JsonDict] = {}
 
         try:
             stream = await litellm.acompletion(
@@ -118,7 +122,7 @@ async def run(
 # ---- internals ------------------------------------------------------------ #
 
 
-def _accumulate_tool_call(acc: dict[int, dict], tc: object) -> None:
+def _accumulate_tool_call(acc: dict[int, JsonDict], tc: Any) -> None:
     """Merge streamed tool-call fragments by index."""
     idx = getattr(tc, "index", 0)
     slot = acc.setdefault(idx, {"id": "", "name": "", "args": ""})
@@ -132,7 +136,7 @@ def _accumulate_tool_call(acc: dict[int, dict], tc: object) -> None:
             slot["args"] += fn.arguments
 
 
-def _assistant_turn(text: str, tool_calls: dict[int, dict]) -> dict:
+def _assistant_turn(text: str, tool_calls: dict[int, JsonDict]) -> JsonDict:
     return {
         "role": "assistant",
         "content": text or None,
@@ -144,7 +148,7 @@ def _assistant_turn(text: str, tool_calls: dict[int, dict]) -> dict:
     }
 
 
-async def _execute(call: dict, run_tool: RunTool) -> str:
+async def _execute(call: JsonDict, run_tool: RunTool) -> str:
     try:
         args = json.loads(call["args"]) if call["args"] else {}
     except json.JSONDecodeError:
