@@ -19,11 +19,11 @@ the daemon.
 │                                                      │
 │  module registry   (entry_points: nixadmin.modules) │
 │  context assembly  (lazy, cached, refreshed on TTL) │
-│  interceptor       (classify → prefetch → augment)  │
-│  router            (local | remote, 3-level)        │
+│  interceptor       (local chain: classify→prefetch) │
+│  router            (local | remote, two-stage)      │
 │  safety gate       (baked in, not bypassable)       │
 │  monitor loop      (poll + D-Bus reactive events)   │
-│  history           (NullHistory v1; sqlite later)   │
+│  session state     (scratch + history, per session) │
 └────────────────┬────────────────────────────────────┘
                  │  Unix socket  (newline-delimited JSON)
      ┌───────────┼───────────┐
@@ -63,7 +63,10 @@ On connect the daemon immediately sends a single `hello`:
  "modules": ["apps", "network", "disk", "services"]}
 ```
 
-- `version` — protocol version. Client must check it; disconnect if unsupported.
+- `version` — protocol version. On mismatch the client **warns and proceeds**
+  (best-effort) rather than hard-disconnecting — daemon and clients ship from one
+  flake, so drift is rare and a loud failure is worse than a logged warning. The
+  field exists so a future hard break *can* gate if ever needed.
 - `chains` — which chains this daemon is configured for.
 - `ready` — per-chain readiness at connect time. A chain may still be warming up
   (Ollama loading, remote endpoint unreachable). The client receives a `ready`
@@ -92,7 +95,8 @@ On connect the daemon immediately sends a single `hello`:
   - For `confirm`: use `"confirmed": bool`
   - For `input`: use `"value": string`
 - `cancel` aborts an in-flight query by `id`:
-  - closes the LLM stream, stops the agent loop, emits a final `done`.
+  - closes the LLM stream, stops the agent loop, emits a final `done` (its
+    `chain`/`model` may be absent if cancelled before a chain was chosen).
   - if a `confirm`/`input` is pending for that `id`, its future resolves as
     cancelled (treated as `confirmed=false`) so nothing leaks.
   - **privileged actions are non-cancellable once started** — a
@@ -146,8 +150,8 @@ network = "nixadmin_network:MODULE"
 ```python
 @dataclass
 class Fetcher:
-    cmd:            str               # shell command (fixed; never model-supplied)
     name:           str               # stable id; tool name when exposed
+    cmd:            str               # shell command (fixed; never model-supplied)
     description:    str = ""           # LLM-facing; required if expose_as_tool
     timeout:        int  = 15         # seconds
     expose_as_tool: bool = False      # offer to remote agent as a zero-arg tool
@@ -161,14 +165,14 @@ class Monitor:
     source:    Literal["poll", "dbus"]
     severity:  Literal["info", "warning", "error"] = "warning"
     # poll
-    cmd:       str           = ""
-    interval:  int           = 60
-    trigger:   Callable      = None   # fn(output: str) -> bool
+    cmd:       str                = ""
+    interval:  int                = 60   # clamped to a floor (≥10s) by the daemon
+    trigger:   Callable | None    = None  # fn(output: str) -> bool
     # dbus (uses dbus-fast)
     bus:       Literal["system", "session"] = "system"
-    interface: str           = ""
-    signal:    str           = ""
-    filter:    Callable      = None   # fn(*signal_args) -> bool
+    interface: str                = ""
+    signal:    str                = ""
+    filter:    Callable | None    = None  # fn(*signal_args) -> bool
 
 @dataclass
 class ContextProvider:
@@ -411,8 +415,13 @@ Tools come in exactly two shapes:
    chooses *which* tool to invoke, never *what command* it runs.
 
    ```
-   fetcher  cmd="nmcli -f active,ssid,signal,state dev wifi"  expose_as_tool=True
+   # in the "network" module:
+   Fetcher(name="wifi_status",
+           cmd="nmcli -f active,ssid,signal,state dev wifi",
+           description="Current Wi-Fi connection, signal strength and state",
+           expose_as_tool=True)
    →  tool  name="network_wifi_status"  parameters={}   # no args
+            description="Current Wi-Fi connection, signal strength and state"
    ```
 
 2. **Built-in structured tools** — fixed name, typed/enum parameters validated
@@ -568,7 +577,7 @@ one at a time; the GTK app gets this guarantee for free.)
 |---------------|--------------------------------|-------------|
 | `litellm`     | remote provider abstraction    | yes (1.86)  |
 | `httpx`       | async HTTP (Ollama calls)      | yes         |
-| `dbus-fast`   | async D-Bus for monitors       | check       |
+| `dbus-fast`   | async D-Bus for monitors       | yes (4.0.4) |
 | `dbus-python` | NOT used (sync, blocks loop)   | —           |
 
 ---
@@ -583,7 +592,7 @@ services.nixadmin = {
   hostname     = "laptop";
 
   # LLM chains
-  local.model  = "qwen2.5:3b";
+  local.model  = "qwen2.5:3b";            # null / "" → no local chain (remote-only)
   local.url    = "http://localhost:11434";
 
   remote.model = "claude-sonnet-4-5";
