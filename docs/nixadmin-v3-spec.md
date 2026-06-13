@@ -104,7 +104,7 @@ On connect the daemon immediately sends a single `hello`:
 ```json
 {"type": "delta",   "id": "abc", "text": "Yes, your WiFi is connected."}
 {"type": "status",  "id": "abc", "text": "local model warming up…"}
-{"type": "done",    "id": "abc"}
+{"type": "done",    "id": "abc", "chain": "local", "model": "qwen2.5:3b"}
 {"type": "error",   "id": "abc", "text": "backend unavailable"}
 {"type": "confirm", "id": "abc", "text": "Local AI is starting. Use remote instead?"}
 {"type": "input",   "id": "abc", "prompt": "Package name:"}
@@ -115,6 +115,13 @@ On connect the daemon immediately sends a single `hello`:
 - `delta` / `status` / `done` / `error` / `confirm` / `input` are scoped to a query `id`.
 - `status` is a **non-blocking** informational push (no response expected) — the UI
   shows it while waiting (warming up, escalating, etc.). `confirm` is blocking.
+- `done` carries `chain` (`"local"` | `"remote"`) and `model` — the client (and
+  user) can see *where* the query was actually answered. This is how the
+  never-silent-routing promise is verified: a privacy query that stayed local
+  shows `chain: "local"`.
+- `done` and `error` are both **terminal** for an `id` — exactly one of them ends
+  a turn. On `error`, any partial `delta`s already shown remain on screen but the
+  turn is marked failed; no further messages arrive for that `id`.
 - `event` is unsolicited, broadcast to all connected clients.
 - Severity: `"info"` | `"warning"` | `"error"`
 - **Ordering:** while a `confirm` or `input` is pending for an `id`, the daemon
@@ -139,9 +146,14 @@ network = "nixadmin_network:MODULE"
 ```python
 @dataclass
 class Fetcher:
-    cmd:            str               # shell command
+    cmd:            str               # shell command (fixed; never model-supplied)
+    name:           str               # stable id; tool name when exposed
+    description:    str = ""           # LLM-facing; required if expose_as_tool
     timeout:        int  = 15         # seconds
-    expose_as_tool: bool = False      # offer to remote agent as a callable tool
+    expose_as_tool: bool = False      # offer to remote agent as a zero-arg tool
+    # Exposed tool name = f"{module.name}_{fetcher.name}" (unique by construction).
+    # `cmd` is used verbatim for local prefetch; `description` is what the remote
+    # model sees to decide whether to call it — never expose raw `cmd` as the desc.
 
 @dataclass
 class Monitor:
@@ -162,8 +174,9 @@ class Monitor:
 class ContextProvider:
     name:             str
     get:              Callable[[], Awaitable[str]]   # async
-    chain:            Literal["remote", "both"] = "remote"
     refresh_interval: int | None = None   # seconds; None = once per daemon lifetime
+    # Context providers feed the REMOTE chain only. The local chain always uses
+    # the minimal hardcoded prompt (a 3B model can't use a 200-word profile well).
 
 @dataclass
 class Module:
@@ -332,14 +345,23 @@ Never make changes unless explicitly asked.
 
 ### Action requests on the local chain
 
-The local chain is **read-only** — it has no tools and cannot make changes.
-classify therefore also flags *mutation intent* ("install firefox", "fix my
-wifi", "turn on bluetooth"). When detected, the local chain does **not** answer:
+The local chain is **read-only** — it has no tools and cannot make changes. The
+worst failure is not making an unwanted change (impossible — no tools) but the
+cheap model **lying** that it did ("Done! Firefox is installed."). For a
+non-technical user that false confirmation is the real trust-breaker.
 
-- remote chain available → the daemon transparently escalates the query to the
-  remote chain (and says so: "This needs the full assistant — switching over.").
-- remote chain unavailable → the daemon replies plainly that changes can't be
-  made right now, rather than letting the cheap model hallucinate a fake "Done!".
+Mutation intent is detected with a **deterministic backstop, not the LLM**: a
+fixed imperative-verb / phrase matcher (install, remove, enable, disable, set,
+change, fix, update, turn on/off…) runs before the model is invoked. We do not
+rely on `classify` for this — classify can time out (cold start) or miss, and a
+missed mutation means a fake "Done!". The deterministic matcher always runs.
+
+When mutation intent is detected, the local model is **never asked to answer**:
+
+- remote chain available → escalate to remote (with a `status`: "This needs the
+  full assistant — switching over.").
+- remote chain unavailable → the daemon itself replies plainly that changes can't
+  be made right now. The model is bypassed entirely, so it cannot fake success.
 
 This is the read-side mirror of the safety gate: the daemon, not the prompt,
 guarantees the local model never pretends to have changed something.
@@ -437,7 +459,6 @@ async def machine_profile() -> str:
 MACHINE_PROFILE = ContextProvider(
     name="machine-profile",
     get=machine_profile,
-    chain="remote",
     refresh_interval=3600,   # re-generate every hour
 )
 ```
@@ -495,6 +516,13 @@ class HistoryBackend(Protocol):
 `NullHistory` implements both as no-ops / empty lists, so the remote chain's
 `history.recent(session, 20)` is safe to call in v1 and simply returns `[]`.
 
+**Write points** (must exist now even under NullHistory, or adding real history
+later means surgery on the chains):
+- after a query is accepted: `append(session, "user", query)`
+- after the turn completes: `append(session, "assistant", final_text)`
+- v1 does **not** persist intermediate tool calls/results; only the final
+  user-visible exchange. (Revisit when a real backend lands.)
+
 Configured via NixOS module option:
 
 ```nix
@@ -503,6 +531,34 @@ services.nixadmin.history = "null";   # default
 ```
 
 Implementations are built-in (not pip entry points).
+
+### Per-session scratch state (distinct from history)
+
+Some daemon logic needs short-lived per-session facts that are **not**
+conversation history and exist even when history is `null`. Notably the safety
+gate's rule "`switch` requires a successful `test` earlier in this session"
+needs somewhere to record that test result.
+
+This is a separate in-memory store, keyed by `session`, cleared on daemon
+restart:
+
+```python
+class SessionState:
+    last_test_ok: bool = False
+    last_test_at: float | None = None
+    # extensible: remembered routing choices (future "remember-my-choice"), etc.
+```
+
+It is always present (not pluggable, not nullable). History persistence and
+session scratch state are deliberately separate concerns.
+
+### One in-flight query per session
+
+The daemon processes **at most one query per `session` at a time**. A second
+query arriving on a busy session is queued behind the first (FIFO). This prevents
+interleaved history appends and scrambled scratch state. Different sessions run
+concurrently; only same-session is serialized. (The terminal CLI naturally sends
+one at a time; the GTK app gets this guarantee for free.)
 
 ---
 
@@ -556,6 +612,15 @@ services.nixadmin = {
 ---
 
 ## Daemon Startup & Chain Readiness
+
+The daemon runs as a **systemd user service** (linger-enabled so it starts at
+boot without a login session). This is load-bearing, not incidental:
+- socket lives in `$XDG_RUNTIME_DIR` (per-user, correct permissions for free)
+- session-bus access for `org.freedesktop.Notifications` (desktop notifications)
+- can reach the rootless-Podman Ollama the same user owns
+- still has system-bus access for systemd/NetworkManager monitors
+Privileged actions are **not** done by the daemon — they go through the separate
+root `nixadmin-helper` over its own socket (see *Safety gate*).
 
 The daemon starts and accepts client connections immediately. Chains become ready
 independently — the `hello` message carries the initial `ready` map (see *Socket
