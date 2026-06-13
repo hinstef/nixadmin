@@ -202,6 +202,13 @@ code runs as the daemon user. There is no sandbox and none is planned; the trust
 boundary is package installation, same as the rest of the system. This is a
 deliberate choice, stated so nobody designs against an imagined sandbox.
 
+> **Accepted for single-author use only.** This model is unsafe for third-party /
+> multi-author module distribution (arbitrary code at boot, shell as the user, and
+> a reachable path to the root helper socket). The decision, its threat model, the
+> revisit trigger, and the hardening plan (declarative manifests + sandboxing +
+> privilege isolation) are recorded in [ADR 0001](adr/0001-module-trust-model.md).
+> Re-open it before opening modules to anyone but the operator.
+
 ### Discovery & ABI
 
 ```python
