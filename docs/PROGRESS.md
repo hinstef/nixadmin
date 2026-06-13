@@ -59,6 +59,30 @@ Pick the first unchecked item.
 - [x] `nix/module.nix` — NixOS module: nixadmin group, root helper service, user daemon service, linger
 - [x] `nix build .#nixadmin` succeeds; built client runs; `nix flake show` clean
 
+## DEPLOY STATUS (2026-06-13)
+
+v3 is fully built, integrated into nixlap, and **proven working live** (daemon
+answered "is my wifi working?" against real qwen2.5:3b). The laptop config builds.
+nixlap changes made: flake input → `github:hinstef/nixadmin/feat/v3-daemon`,
+`services.nixadmin` updated to v3 schema (`defaultChain="local"`).
+
+**BLOCKED on one privileged step.** Switching from v2→v3 changes the
+`nixadmin-helper` derivation, so `switch-to-configuration` restarts the helper
+mid-switch — severing the connection running the switch (the helper *is* the
+privilege path). The switch was interrupted; system is cleanly still on the v2
+generation, helper now inactive. This is a one-time bootstrap problem.
+
+**To finish (user runs once, authenticates with fingerprint):**
+```bash
+cd ~/workspace/nixlap
+! sudo nixos-rebuild switch --flake .#laptop
+```
+Running it directly via sudo (not the helper) avoids the self-restart problem.
+After this first switch lands v3's helper, future `nixadmin-rebuild switch` works
+again. Then verify: `systemctl --user status nixadmin-daemon` and run `nixadmin`.
+
+Rollback if needed: `! sudo nixos-rebuild switch --rollback`.
+
 ## v1 build COMPLETE — what's left before it runs on the laptop
 1. **Wire into nixlap** — add this flake as an input in `~/workspace/nixlap/flake.nix`,
    import `nixadmin.nixosModules.default`, set `services.nixadmin` options (user=steve,
