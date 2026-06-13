@@ -6,7 +6,9 @@ let
   pkg = self.packages.${pkgs.system}.nixadmin;
 
   # Privileged rebuild helper — runs as root, owns a group-accessible socket.
-  helper = pkgs.writers.writePython3Bin "nixadmin-helper" { } (builtins.readFile ./nixadmin-helper.py);
+  helper = pkgs.writers.writePython3Bin "nixadmin-helper"
+    { flakeIgnore = [ "E221" "E501" ]; }
+    (builtins.readFile ./nixadmin-helper.py);
 
   # `nixadmin-apps` — the apps module's fetcher command. Lists declarative Nix
   # packages and installed Flatpak apps in plain text.
