@@ -59,31 +59,26 @@ Pick the first unchecked item.
 - [x] `nix/module.nix` — NixOS module: nixadmin group, root helper service, user daemon service, linger
 - [x] `nix build .#nixadmin` succeeds; built client runs; `nix flake show` clean
 
-## DEPLOY STATUS (2026-06-13)
+## DEPLOYED & LIVE (2026-06-13) ✅
 
-v3 is fully built, integrated into nixlap, and **proven working live** (daemon
-answered "is my wifi working?" against real qwen2.5:3b). The laptop config builds.
-nixlap changes made: flake input → `github:hinstef/nixadmin/feat/v3-daemon`,
-`services.nixadmin` updated to v3 schema (`defaultChain="local"`).
+v3 is built, integrated into nixlap, deployed, and **running in production** as a
+systemd user service. Verified end-to-end against the deployed daemon: "how much
+disk space do I have left?" → "You have approximately 733G available out of 951G
+on the main filesystem /." (chain=local, qwen2.5:3b, grounded in real df output).
 
-**BLOCKED on one privileged step.** Switching from v2→v3 changes the
-`nixadmin-helper` derivation, so `switch-to-configuration` restarts the helper
-mid-switch — severing the connection running the switch (the helper *is* the
-privilege path). The switch was interrupted; system is cleanly still on the v2
-generation, helper now inactive. This is a one-time bootstrap problem.
+Active services: `nixadmin-helper` (root), `nixadmin-daemon` (user),
+`nixadmin-ollama` + preload (user). Socket: `/run/user/1001/nixadmin.sock`.
+The one-time v2→v3 helper bootstrap was completed via a direct `sudo nixos-rebuild
+switch`; future `nixadmin-rebuild switch` works normally now.
 
-**To finish (user runs once, authenticates with fingerprint):**
-```bash
-cd ~/workspace/nixlap
-! sudo nixos-rebuild switch --flake .#laptop
-```
-Running it directly via sudo (not the helper) avoids the self-restart problem.
-After this first switch lands v3's helper, future `nixadmin-rebuild switch` works
-again. Then verify: `systemctl --user status nixadmin-daemon` and run `nixadmin`.
+### Follow-ups (optional, not blocking — v3 fully works on the local chain)
+- Remote chain needs a Hermes proxy / API base (Claude subscription) before use.
+  `defaultChain="local"` so the system works without it today.
+- machine-profile ContextProvider (interface ready, none registered).
+- desktop-notification path when no client connected (events only broadcast now).
+- real test harness (was deferred until proven — now proven).
 
-Rollback if needed: `! sudo nixos-rebuild switch --rollback`.
-
-## v1 build COMPLETE — what's left before it runs on the laptop
+## v1 build COMPLETE — earlier integration notes (now done)
 1. **Wire into nixlap** — add this flake as an input in `~/workspace/nixlap/flake.nix`,
    import `nixadmin.nixosModules.default`, set `services.nixadmin` options (user=steve,
    flakeDir, hostname=laptop, local.model="qwen2.5:3b", defaultChain). Ollama container
