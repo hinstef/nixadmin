@@ -9,9 +9,9 @@ land. Source of truth for *what* to build is [`nixadmin-v3-spec.md`](nixadmin-v3
 cd ~/workspace/nix-nixadmin
 git checkout feat/v3-daemon
 git log --oneline -12          # see where we stopped
-# run the smoke tests:
+# run the smoke tests (full set needs httpx + litellm):
 nix shell --impure --expr 'let p = import <nixpkgs> {}; in
-  p.python313.withPackages (ps: [ ps.pytest ps.pytest-asyncio ps.structlog ])' \
+  p.python313.withPackages (ps: [ ps.pytest ps.pytest-asyncio ps.structlog ps.httpx ps.litellm ])' \
   --command python -m pytest -q
 ```
 
@@ -40,9 +40,9 @@ Pick the first unchecked item.
 - [x] `prefetch.py` — parallel fetcher exec (asyncio.to_thread), grounding guard
 - [x] `routing.py` — deterministic mutation matcher + two-stage resolve (pure, DI'd)
 
-### LLM backends — TODO
-- [ ] `llm/local.py` — Ollama httpx: classify (timeout-guarded) + summarize stream
-- [ ] `llm/remote.py` — LiteLLM agent loop, fetcher-derived tools + nixadmin_rebuild, history
+### LLM backends — DONE
+- [x] `llm/local.py` — Ollama httpx: is_ready, classify (timeout-guarded) + summarize stream; pure prompt helpers
+- [x] `llm/remote.py` — LiteLLM agent loop, build_tools (fetcher + rebuild), DI'd run_tool callback, history
 
 ### Reactive + safety — TODO
 - [ ] `safety.py` — gate (confirm, test-before-switch via SessionState) + helper-socket client
