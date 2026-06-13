@@ -11,7 +11,7 @@ git checkout feat/v3-daemon
 git log --oneline -12          # see where we stopped
 # run the smoke tests (full set needs httpx + litellm):
 nix shell --impure --expr 'let p = import <nixpkgs> {}; in
-  p.python313.withPackages (ps: [ ps.pytest ps.pytest-asyncio ps.structlog ps.httpx ps.litellm ])' \
+  p.python313.withPackages (ps: [ ps.pytest ps.pytest-asyncio ps.structlog ps.httpx ps.litellm ps.dbus-fast ])' \
   --command python -m pytest -q
 ```
 
@@ -44,10 +44,10 @@ Pick the first unchecked item.
 - [x] `llm/local.py` — Ollama httpx: is_ready, classify (timeout-guarded) + summarize stream; pure prompt helpers
 - [x] `llm/remote.py` — LiteLLM agent loop, build_tools (fetcher + rebuild), DI'd run_tool callback, history
 
-### Reactive + safety — TODO
-- [ ] `safety.py` — gate (confirm, test-before-switch via SessionState) + helper-socket client
-- [ ] `context.py` — ContextProvider cache + TTL, system-prompt assembly (remote only)
-- [ ] `monitors.py` — poll loop + dbus-fast, interval floor, concurrency cap, event callback
+### Reactive + safety — DONE
+- [x] `safety.py` — gate (confirm, test-before-switch via SessionState) + helper-socket client
+- [x] `context.py` — ContextProvider cache + TTL, system-prompt assembly (remote only)
+- [x] `monitors.py` — poll loop + dbus-fast, interval floor, concurrency cap, event callback
 
 ### Daemon + client — TODO
 - [ ] `server.py` — unix socket server, hello, query dispatch, confirm/input, cancel, broadcast
