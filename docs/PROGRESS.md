@@ -53,9 +53,29 @@ Pick the first unchecked item.
 - [x] `server.py` — unix socket server, hello, query dispatch, confirm/input, cancel, broadcast
 - [x] `cli.py` — terminal client (spinner, streaming, confirm prompts)
 
-### Packaging — TODO
-- [ ] `flake.nix` — package the app, devShell, NixOS module (user service + root helper)
-- [ ] root `nixadmin-helper` (privileged rebuild) — re-derive from v2 history (`git show main:modules/nixos/helper/nixadmin-helper.py`)
+### Packaging — DONE
+- [x] `flake.nix` — buildPythonApplication (httpx/litellm/dbus-fast/structlog), devShell, nixosModules.default
+- [x] `nix/nixadmin-helper.py` — privileged rebuild helper (recovered from v2, protocol matches safety.py)
+- [x] `nix/module.nix` — NixOS module: nixadmin group, root helper service, user daemon service, linger
+- [x] `nix build .#nixadmin` succeeds; built client runs; `nix flake show` clean
+
+## v1 build COMPLETE — what's left before it runs on the laptop
+1. **Wire into nixlap** — add this flake as an input in `~/workspace/nixlap/flake.nix`,
+   import `nixadmin.nixosModules.default`, set `services.nixadmin` options (user=steve,
+   flakeDir, hostname=laptop, local.model="qwen2.5:3b", defaultChain). Ollama container
+   (from v2 `git show main:modules/nixos/nixadmin.nix`) is NOT in v3 yet — the daemon
+   expects Ollama at localhost:11434. Either keep the v2 container module or add one.
+2. **`nixadmin-apps` command** — the apps module fetcher calls it; it was defined in the
+   v2 module. Re-provide it (script listing nix + flatpak packages).
+3. **Live smoke** — `nixadmin-daemon` by hand, then `nixadmin`, ask "is my wifi working?".
+4. **Real harness** (deferred per user): fakes for Ollama/LiteLLM/D-Bus, golden transcripts.
+
+### Known gaps / TODO-later (not blocking)
+- Remote readiness is optimistic (assumed ready if model configured); failures surface per-call.
+- `Ready` message wired but `hello.ready` only reflects local; remote always advertised ready.
+- Monitors' desktop-notification-when-no-clients path is not implemented (events only broadcast).
+- Context providers: no built-in machine-profile provider yet (interface ready, none registered).
+- History is NullHistory only; SessionState scratch works (test-before-switch enforced).
 
 ## Key decisions already locked (don't re-litigate)
 - Two independent chains: local (classify→prefetch→summarize, no tools) / remote (tools).
