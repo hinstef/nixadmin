@@ -71,6 +71,15 @@ Active services: `nixadmin-helper` (root), `nixadmin-daemon` (user),
 The one-time v2→v3 helper bootstrap was completed via a direct `sudo nixos-rebuild
 switch`; future `nixadmin-rebuild switch` works normally now.
 
+### Modules (10 live)
+- **Built-in (core):** apps, network, disk, services.
+- **External package `contrib/nixadmin-extras`** (via `nixadmin.modules` entry points,
+  deployed through `services.nixadmin.extraModules`): system, power (low-battery
+  monitor), performance, bluetooth, updates, security (`routing="local"`).
+- Discovery proven end-to-end: deployed daemon loads all 10; live-verified answers
+  for system / power / security (security stayed `[local]` per its privacy routing).
+- This validated the plugin pathway — the architectural centerpiece — for real.
+
 ### Testing (enforced)
 - `nix flake check` runs all gates in the sandbox: **pytest (53)**, **mypy --strict
   (clean)**, **ruff**, plus the NixOS module eval. One reproducible command.
