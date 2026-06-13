@@ -5,6 +5,10 @@ let
   cfg = config.services.nixadmin;
   pkg = self.packages.${pkgs.system}.nixadmin;
 
+  # The daemon runs in a Python env that includes nixadmin plus any extra module
+  # packages, so importlib entry-point discovery finds the modules they register.
+  daemonPython = pkgs.python3.withPackages (_: [ pkg ] ++ cfg.extraModules);
+
   # Privileged rebuild helper — runs as root, owns a group-accessible socket.
   helper = pkgs.writers.writePython3Bin "nixadmin-helper"
     { flakeIgnore = [ "E221" "E501" ]; }
@@ -158,6 +162,17 @@ in
       description = "Daemon log renderer.";
     };
 
+    extraModules = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      example = lib.literalExpression "[ inputs.nixadmin.packages.\${system}.nixadmin-extras ]";
+      description = ''
+        Extra Python module packages (each registering the `nixadmin.modules`
+        entry point). They are added to the daemon's Python environment and
+        discovered automatically.
+      '';
+    };
+
     ollama.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -212,7 +227,7 @@ in
       environment = daemonEnv;
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${pkg}/bin/nixadmin-daemon";
+        ExecStart = "${daemonPython}/bin/nixadmin-daemon";
         Restart = "on-failure";
         RestartSec = "5s";
       };

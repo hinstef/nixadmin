@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nixadmin-extras"
+version = "0.1.0"
+description = "Extra nixadmin modules — common desktop/admin questions"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["nixadmin"]  # for nixadmin.sdk
+
+# This is the whole point of the package: register modules the daemon discovers.
+[project.entry-points."nixadmin.modules"]
+system = "nixadmin_extras.system:manifest"
+power = "nixadmin_extras.power:manifest"
+performance = "nixadmin_extras.performance:manifest"
+bluetooth = "nixadmin_extras.bluetooth:manifest"
+updates = "nixadmin_extras.updates:manifest"
+security = "nixadmin_extras.security:manifest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nixadmin_extras"]

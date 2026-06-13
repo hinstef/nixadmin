@@ -10,16 +10,29 @@
     in
     {
       packages = forAll (system: pkgs: rec {
-        nixadmin = pkgs.python3.pkgs.buildPythonApplication {
+        # buildPythonPackage (not Application) so it composes in a python env
+        # alongside third-party module packages for entry-point discovery.
+        nixadmin = pkgs.python3.pkgs.buildPythonPackage {
           pname = "nixadmin";
           version = "0.1.0";
           src = ./.;
           pyproject = true;
           build-system = [ pkgs.python3.pkgs.hatchling ];
           dependencies = with pkgs.python3.pkgs; [ httpx litellm dbus-fast structlog ];
-          # The smoke tests run in the dev shell; keep the build lean.
+          doCheck = false; # tests run via `nix flake check`
+        };
+
+        # Reference third-party module package — discovered via entry points.
+        nixadmin-extras = pkgs.python3.pkgs.buildPythonPackage {
+          pname = "nixadmin-extras";
+          version = "0.1.0";
+          src = ./contrib/nixadmin-extras;
+          pyproject = true;
+          build-system = [ pkgs.python3.pkgs.hatchling ];
+          dependencies = [ nixadmin ];
           doCheck = false;
         };
+
         default = nixadmin;
       });
 
@@ -56,7 +69,7 @@
         {
           pytest = check "pytest" [ pyEnv ] "pytest -q";
           mypy = check "mypy" [ pyEnv ] "mypy src/nixadmin";
-          ruff = check "ruff" [ pkgs.ruff ] "ruff check src tests";
+          ruff = check "ruff" [ pkgs.ruff ] "ruff check src tests contrib";
         });
 
       nixosModules.default = import ./nix/module.nix self;
