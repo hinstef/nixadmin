@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nixadmin"
+version = "0.1.0"
+description = "Ambient system intelligence daemon for NixOS"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Steffen" }]
+
+# Runtime deps. protocol.py / sdk.py / cli.py are stdlib-only by discipline so a
+# future client/sdk split needs no code change — only the daemon needs the heavy
+# packages below.
+dependencies = [
+    "httpx>=0.27",       # async HTTP for the local (Ollama) chain
+    "litellm>=1.86",     # remote provider abstraction (Hermes, APIs, OpenRouter…)
+    "dbus-fast>=4.0",    # async D-Bus for monitors
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+nixadmin = "nixadmin.cli:main"
+nixadmin-daemon = "nixadmin.server:main"
+
+# Third-party modules register here. Built-in modules are loaded directly (not
+# via entry points) and always take precedence.
+[project.entry-points."nixadmin.modules"]
+# example = "nixadmin_example:MODULE"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nixadmin"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
