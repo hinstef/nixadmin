@@ -87,7 +87,9 @@ let
     NIXADMIN_CHAIN = cfg.defaultChain;
     NIXADMIN_HISTORY = cfg.history;
     NIXADMIN_LOG_FORMAT = cfg.logFormat;
-    PATH = "/run/wrappers/bin:/run/current-system/sw/bin";
+    # Fetcher commands (nmcli, ping, lsblk, nixadmin-apps…) resolve via the system
+    # profile. mkForce overrides the default user-service PATH rather than conflicting.
+    PATH = lib.mkForce "/run/wrappers/bin:/run/current-system/sw/bin";
   };
 
   ollamaEnabled = cfg.ollama.enable && cfg.local.model != "";
