@@ -135,6 +135,14 @@ class Input:
 
 
 @dataclass
+class Ready:
+    """A chain became available after starting unready (warming up). Broadcast."""
+
+    chain: str
+    TYPE: ClassVar[str] = "ready"
+
+
+@dataclass
 class Event:
     """Unsolicited monitor event, broadcast to all clients (not tied to a query)."""
 
@@ -149,12 +157,16 @@ class Event:
 # --------------------------------------------------------------------------- #
 
 Message = (
-    Query | Cancel | Respond | Hello | Delta | Status | Done | Error | Confirm | Input | Event
+    Query | Cancel | Respond | Hello | Delta | Status | Done | Error
+    | Confirm | Input | Ready | Event
 )
 
 _REGISTRY: dict[str, type] = {
     cls.TYPE: cls
-    for cls in (Query, Cancel, Respond, Hello, Delta, Status, Done, Error, Confirm, Input, Event)
+    for cls in (
+        Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
+        Confirm, Input, Ready, Event,
+    )
 }
 
 

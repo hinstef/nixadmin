@@ -171,7 +171,9 @@ class Module:
         if not self.name:
             raise ModuleError("Module.name must be non-empty")
         if not self.description:
-            raise ModuleError(f"Module {self.name!r} must have a description (drives the classifier)")
+            raise ModuleError(
+                f"Module {self.name!r} must have a description (drives the classifier)"
+            )
         names = [f.name for f in self.fetchers]
         dupes = {n for n in names if names.count(n) > 1}
         if dupes:

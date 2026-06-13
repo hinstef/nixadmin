@@ -49,9 +49,9 @@ Pick the first unchecked item.
 - [x] `context.py` — ContextProvider cache + TTL, system-prompt assembly (remote only)
 - [x] `monitors.py` — poll loop + dbus-fast, interval floor, concurrency cap, event callback
 
-### Daemon + client — TODO
-- [ ] `server.py` — unix socket server, hello, query dispatch, confirm/input, cancel, broadcast
-- [ ] `cli.py` — terminal client (spinner, streaming, confirm prompts)
+### Daemon + client — DONE
+- [x] `server.py` — unix socket server, hello, query dispatch, confirm/input, cancel, broadcast
+- [x] `cli.py` — terminal client (spinner, streaming, confirm prompts)
 
 ### Packaging — TODO
 - [ ] `flake.nix` — package the app, devShell, NixOS module (user service + root helper)
