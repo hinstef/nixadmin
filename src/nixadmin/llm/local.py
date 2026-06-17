@@ -95,33 +95,6 @@ async def classify(query: str, modules: list[Module], *, model: str, url: str) -
         return []
 
 
-async def suggest_package(phrase: str, *, model: str, url: str) -> str:
-    """Ask the local model for the most likely nixpkgs attribute for a phrase that
-    didn't resolve (e.g. a typo). Returns a candidate name or '' on failure.
-
-    The caller MUST still validate the candidate (it's model output going toward a
-    config edit) — this only proposes."""
-    prompt = (
-        f"A user asked to install the app '{phrase}' on NixOS, but no nixpkgs "
-        "package has that exact name (likely a typo or common name). What is the "
-        "single most likely intended nixpkgs attribute? Reply with ONLY one "
-        "lowercase attribute name, or 'unknown'."
-    )
-    body = {
-        "model": model, "prompt": prompt, "stream": False,
-        "options": {"num_predict": 12, "temperature": 0},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(f"{url}/api/generate", json=body)
-            r.raise_for_status()
-            reply: str = r.json().get("response", "")
-            return reply.strip().lower()
-    except Exception as e:  # noqa: BLE001 — suggestion is best-effort
-        log.warning("suggest_package failed", error=str(e))
-        return ""
-
-
 async def summarize(message: str, *, model: str, url: str) -> AsyncIterator[str]:
     """Stream the local model's answer to an already-augmented message."""
     body = {

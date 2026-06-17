@@ -21,6 +21,7 @@ templates, tracked separately.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import re
 import shutil
 import tempfile
@@ -34,6 +35,28 @@ from nixadmin.log import get_logger
 log = get_logger(__name__)
 
 HOME_FILE = "modules/home-manager/default.nix"
+
+# Curated common nixpkgs apps, used for deterministic typo correction (a 3B local
+# model is unreliable at fuzzy name matching; difflib against this list is not).
+# Extend freely — a wrong guess is still gated by "did you mean?" + worktree eval.
+COMMON_APPS = [
+    "firefox", "chromium", "google-chrome", "brave", "tor-browser",
+    "vlc", "mpv", "obs-studio", "audacity", "handbrake", "kdenlive", "shotcut",
+    "spotify", "discord", "slack", "telegram-desktop", "signal-desktop",
+    "element-desktop", "zoom-us", "teams-for-linux", "thunderbird",
+    "gimp", "inkscape", "krita", "blender", "darktable", "freecad", "openscad",
+    "libreoffice", "onlyoffice-bin", "obsidian", "logseq", "zotero", "calibre",
+    "vscode", "vscodium", "sublime4", "neovim", "vim", "emacs", "zed-editor",
+    "git", "gh", "lazygit", "docker", "podman", "podman-compose",
+    "nodejs", "python3", "go", "rustc", "cargo", "uv", "ruff",
+    "kubectl", "k9s", "kubernetes-helm", "terraform", "ansible",
+    "keepassxc", "bitwarden", "nextcloud-client", "syncthing", "rclone",
+    "transmission", "qbittorrent", "deluge",
+    "htop", "btop", "fastfetch", "neofetch", "tree", "ripgrep", "fd", "bat",
+    "eza", "fzf", "jq", "yq", "curl", "wget", "tmux", "zellij",
+    "steam", "lutris", "heroic", "prismlauncher", "mangohud",
+    "mission-center", "gnome-disk-utility", "flatseal", "wireshark", "vlc",
+]
 
 # Natural phrases → nixpkgs attribute names. Extend as needed; unknown names are
 # tried verbatim and validated by the worktree build.
@@ -49,16 +72,12 @@ ALIASES = {
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
 SwitchFn = Callable[[], Awaitable[str]]
-SuggestFn = Callable[[str], Awaitable[str]]
-
-# A valid nixpkgs attribute name (the candidate goes toward a config edit).
-_ATTR_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
-def sanitize_attr(name: str) -> str:
-    """Reduce model output to a safe single nixpkgs attribute, or '' if implausible."""
-    token = name.strip().strip("`'\".,").split()[0] if name.strip() else ""
-    return token if token != "unknown" and _ATTR_RE.match(token) else ""
+def closest_app(name: str) -> str:
+    """Deterministic typo correction: nearest common app by edit distance, or ''."""
+    matches = difflib.get_close_matches(name.lower(), COMMON_APPS, n=1, cutoff=0.6)
+    return matches[0] if matches else ""
 
 _INSTALL_RE = re.compile(r"\b(?:install|add)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
 _REMOVE_RE = re.compile(r"\b(?:uninstall|remove|delete)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
@@ -146,7 +165,6 @@ async def run_app_action(
     confirm: ConfirmFn,
     status: StatusFn,
     switch: SwitchFn,
-    suggest: SuggestFn | None = None,
 ) -> str:
     """Install or remove an app. Returns a plain-language result for the user."""
     add = action.kind == "install_app"
@@ -169,12 +187,12 @@ async def run_app_action(
     await status(f"checking that {pkg} {'installs' if add else 'removes'} cleanly…")
     ok, diff = await _validate_in_worktree(flake_dir, hostname, edited)
 
-    # Typo / common-name recovery: ask the model what they meant, validate it too.
+    # Typo recovery: deterministic nearest common app, validated in the worktree too.
     preamble = ""
-    if not ok and add and suggest is not None:
-        await status(f"'{pkg}' isn't a package — figuring out what you meant…")
-        cand = sanitize_attr(await suggest(action.target))
+    if not ok and add:
+        cand = closest_app(pkg)
         if cand and cand != pkg:
+            await status(f"'{pkg}' isn't a package — did you mean '{cand}'? checking…")
             cand_edited = edit_packages(original, cand, add=True)
             if cand_edited != original:
                 ok, diff = await _validate_in_worktree(flake_dir, hostname, cand_edited)

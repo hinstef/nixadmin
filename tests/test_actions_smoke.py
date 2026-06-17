@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nixadmin.actions import edit_packages, parse_action, sanitize_attr
+from nixadmin.actions import closest_app, edit_packages, parse_action
 from nixadmin.errors import NixadminError
 
 SAMPLE = """\
@@ -68,22 +68,18 @@ def test_edit_no_list_raises():
         edit_packages("{ }:\n{ }\n", "steam", add=True)
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("steam", "steam"),
-    ("  Steam.\n", "Steam"),            # trimmed + punctuation stripped (case preserved)
-    ("`firefox`", "firefox"),
-    ("google-chrome", "google-chrome"),
-    ("did you mean steam", "did"),       # takes first token only
-    ("unknown", ""),                      # explicit unknown rejected
-    ("foo; rm -rf /", ""),                # shell metachars → rejected
+@pytest.mark.parametrize("typo,expected", [
+    ("stem", "steam"),
+    ("steram", "steam"),
+    ("fire fox", "firefox"),
+    ("chrom", "chromium"),
+    ("discrod", "discord"),
+    ("blendr", "blender"),
 ])
-def test_sanitize_attr(raw, expected):
-    # The filter only guarantees a single well-formed token; the real safety net is
-    # the worktree `nix eval` (a bogus name simply fails to evaluate).
-    assert sanitize_attr(raw) == expected
+def test_closest_app_corrects_common_typos(typo, expected):
+    assert closest_app(typo) == expected
 
 
-def test_sanitize_rejects_injection_chars():
-    for bad in ["foo; rm -rf /", "a b", "$(evil)", "../x", ""]:
-        out = sanitize_attr(bad)
-        assert out == "" or out.replace("-", "").replace("_", "").replace(".", "").isalnum()
+@pytest.mark.parametrize("nonsense", ["zzzqwxyz", "asdfghjkl", "xyzzy123"])
+def test_closest_app_returns_empty_for_no_match(nonsense):
+    assert closest_app(nonsense) == ""
