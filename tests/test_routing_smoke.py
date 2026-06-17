@@ -24,6 +24,14 @@ def test_detect_mutation_false(text):
     assert detect_mutation(text) is False
 
 
+@pytest.mark.parametrize("text", ["can you install new apps?", "could you remove gimp?",
+                                  "how do I enable bluetooth?", "is it possible to update?",
+                                  "do you update the system?"])
+def test_capability_questions_are_not_mutations(text):
+    """Interrogative phrasing mentioning an action verb is a question, not a write."""
+    assert detect_mutation(text) is False
+
+
 def test_stage1_explicit_wins_and_pins():
     chain, pinned = resolve_desired_chain(explicit="local", matched=[], default_chain="remote")
     assert chain == "local" and pinned is True

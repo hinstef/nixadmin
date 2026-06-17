@@ -44,10 +44,30 @@ class Config:
     log_format: Literal["json", "console"] = "json"
     log_level: str = "INFO"
 
+    #: Env vars that indicate a usable remote credential (provider-agnostic).
+    _REMOTE_KEYS = (
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+    )
+
     @property
     def has_local(self) -> bool:
         """True when a local chain is configured (a local model is set)."""
         return bool(self.local_model)
+
+    @property
+    def remote_usable(self) -> bool:
+        """True only when the remote chain can actually authenticate — a proxy/base
+        URL (e.g. Hermes) is set, or a provider API key is in the environment.
+
+        A bare model name is not enough: routing must not send work to a backend
+        that will fail with an auth error.
+        """
+        if not self.remote_model:
+            return False
+        if self.remote_base:
+            return True
+        return any(k in os.environ for k in self._REMOTE_KEYS)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Config:

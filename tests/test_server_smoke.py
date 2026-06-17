@@ -42,7 +42,9 @@ async def test_remote_query_round_trip(daemon_socket, monkeypatch):
 
     monkeypatch.setattr("nixadmin.server.remote_llm.run", fake_run)
 
-    cfg = Config(remote_model="fake-model", default_chain="remote", socket_path=daemon_socket)
+    # remote_base set → remote_usable is True without needing an API key env.
+    cfg = Config(remote_model="fake-model", remote_base="http://fake", default_chain="remote",
+                 socket_path=daemon_socket)
     daemon = Daemon(cfg)
     server_task = asyncio.create_task(daemon.run())
     await asyncio.sleep(0.2)  # let it bind
@@ -73,11 +75,14 @@ async def test_remote_query_round_trip(daemon_socket, monkeypatch):
         await daemon.aclose()
 
 
-async def test_mutation_without_remote_is_refused(daemon_socket):
-    # remote-only config but mark remote unavailable → mutation must be refused.
+async def test_mutation_without_remote_says_it_cannot(daemon_socket, monkeypatch):
+    # No remote credentials → remote_usable False → writes get a plain-language
+    # limitation (a Delta), not an auth error.
+    for k in Config._REMOTE_KEYS:
+        monkeypatch.delenv(k, raising=False)
     cfg = Config(remote_model="fake", default_chain="remote", socket_path=daemon_socket)
     daemon = Daemon(cfg)
-    daemon.remote_ready = False
+    assert daemon.remote_ready is False  # no key/base → not usable
     server_task = asyncio.create_task(daemon.run())
     await asyncio.sleep(0.2)
 
@@ -86,8 +91,15 @@ async def test_mutation_without_remote_is_refused(daemon_socket):
         await _read_until(reader, "hello")
         writer.write(wire.encode(wire.Query(id="q1", text="install firefox")).encode())
         await writer.drain()
-        err = await _read_until(reader, "error")
-        assert "can't make changes" in err.text.lower()
+        text = ""
+        async with asyncio.timeout(2.0):
+            async for raw in reader:
+                msg = wire.decode(raw.decode().strip())
+                if isinstance(msg, wire.Delta):
+                    text += msg.text
+                elif isinstance(msg, wire.Done):
+                    break
+        assert "can't make changes" in text.lower()
         writer.close()
     finally:
         server_task.cancel()

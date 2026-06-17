@@ -85,7 +85,9 @@ class Daemon:
         self.conns: set[ClientConn] = set()
         self.local_ready = False
         self._local_ready_evt = asyncio.Event()
-        self.remote_ready = bool(config.remote_model)  # optimistic; failures surface per-call
+        # Only ready if the remote can actually authenticate (key/proxy present),
+        # so we never route work to a backend that will fail with an auth error.
+        self.remote_ready = config.remote_usable
         # map exposed tool name -> shell command (fixed; no model-supplied args)
         self._tool_cmds = {
             f"{m.name}_{f.name}": f.cmd
@@ -219,10 +221,14 @@ class Daemon:
         matched: list[Module],
     ) -> None:
         if not self.remote_ready:
-            await conn.send(wire.Error(
+            # Not an error — a plain-language limitation. Making changes needs the
+            # remote assistant, which isn't configured on this machine.
+            await conn.send(wire.Delta(
                 id=query.id,
-                text="I can't make changes right now — the full assistant is unavailable.",
+                text="I can't make changes yet — that needs the full assistant, "
+                     "which isn't set up on this machine.",
             ))
+            await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
             return
         # Escalate to remote. If the query was pinned local (privacy), the change
         # still needs remote tools, so confirm that it will leave the device.

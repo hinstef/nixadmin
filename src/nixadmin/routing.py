@@ -35,9 +35,23 @@ _MUTATION_PATTERNS = [
 ]
 _MUTATION_RE = re.compile("|".join(_MUTATION_PATTERNS), re.IGNORECASE)
 
+# Capability / how-to questions that merely *mention* an action verb but are not
+# requests to perform it ("can you install apps?", "how do I enable bluetooth?").
+# Treated as questions, not mutations, so they are not escalated to the agent.
+_QUESTION_RE = re.compile(
+    r"^\s*(can|could|are|is|do|does|how|what|why|when|where|should)\b",
+    re.IGNORECASE,
+)
+
 
 def detect_mutation(text: str) -> bool:
-    """True if the query expresses intent to change the system (deterministic)."""
+    """True if the query expresses intent to *change* the system (deterministic).
+
+    Imperative phrasing ("install steam") counts; interrogative phrasing
+    ("can you install apps?") does not — it is a question about capability.
+    """
+    if _QUESTION_RE.match(text):
+        return False
     return _MUTATION_RE.search(text) is not None
 
 

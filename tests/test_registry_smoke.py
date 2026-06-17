@@ -35,3 +35,15 @@ def test_config_from_env_reads_local_model():
     assert cfg.has_local is True
     assert cfg.local_model == "qwen2.5:3b"
     assert cfg.default_chain == "local"
+
+
+def test_remote_usable_requires_credentials(monkeypatch):
+    for k in Config._REMOTE_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    # model set but no key, no base → not usable
+    assert Config(remote_model="claude-sonnet-4-5").remote_usable is False
+    # a base URL (e.g. Hermes proxy) makes it usable
+    assert Config(remote_model="x", remote_base="http://localhost:4000").remote_usable is True
+    # an API key in the env makes it usable
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert Config(remote_model="claude-sonnet-4-5").remote_usable is True
