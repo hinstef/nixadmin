@@ -94,8 +94,9 @@ let
     NIXADMIN_HISTORY = cfg.history;
     NIXADMIN_LOG_FORMAT = cfg.logFormat;
     # Fetcher commands (nmcli, ping, lsblk, nixadmin-apps…) resolve via the system
-    # profile. mkForce overrides the default user-service PATH rather than conflicting.
-    PATH = lib.mkForce "/run/wrappers/bin:/run/current-system/sw/bin";
+    # profile; git + nix are needed by the action tier (worktree-validated edits).
+    # mkForce overrides the default user-service PATH rather than conflicting.
+    PATH = lib.mkForce "${pkgs.git}/bin:${pkgs.nix}/bin:/run/wrappers/bin:/run/current-system/sw/bin";
   };
 
   ollamaEnabled = cfg.ollama.enable && cfg.local.model != "";
