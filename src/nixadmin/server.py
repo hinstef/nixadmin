@@ -242,6 +242,9 @@ class Daemon:
             confirm=lambda text: conn.confirm(query.id, text),
             status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
             switch=self.safety.apply_switch,
+            suggest=lambda phrase: local_llm.suggest_package(
+                phrase, model=self.cfg.local_model, url=self.cfg.local_url
+            ),
         )
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))

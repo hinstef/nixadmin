@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nixadmin.actions import edit_packages, parse_action
+from nixadmin.actions import edit_packages, parse_action, sanitize_attr
 from nixadmin.errors import NixadminError
 
 SAMPLE = """\
@@ -66,3 +66,24 @@ def test_edit_remove_absent_raises():
 def test_edit_no_list_raises():
     with pytest.raises(NixadminError, match="home.packages"):
         edit_packages("{ }:\n{ }\n", "steam", add=True)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("steam", "steam"),
+    ("  Steam.\n", "Steam"),            # trimmed + punctuation stripped (case preserved)
+    ("`firefox`", "firefox"),
+    ("google-chrome", "google-chrome"),
+    ("did you mean steam", "did"),       # takes first token only
+    ("unknown", ""),                      # explicit unknown rejected
+    ("foo; rm -rf /", ""),                # shell metachars → rejected
+])
+def test_sanitize_attr(raw, expected):
+    # The filter only guarantees a single well-formed token; the real safety net is
+    # the worktree `nix eval` (a bogus name simply fails to evaluate).
+    assert sanitize_attr(raw) == expected
+
+
+def test_sanitize_rejects_injection_chars():
+    for bad in ["foo; rm -rf /", "a b", "$(evil)", "../x", ""]:
+        out = sanitize_attr(bad)
+        assert out == "" or out.replace("-", "").replace("_", "").replace(".", "").isalnum()

@@ -49,6 +49,16 @@ ALIASES = {
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
 SwitchFn = Callable[[], Awaitable[str]]
+SuggestFn = Callable[[str], Awaitable[str]]
+
+# A valid nixpkgs attribute name (the candidate goes toward a config edit).
+_ATTR_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def sanitize_attr(name: str) -> str:
+    """Reduce model output to a safe single nixpkgs attribute, or '' if implausible."""
+    token = name.strip().strip("`'\".,").split()[0] if name.strip() else ""
+    return token if token != "unknown" and _ATTR_RE.match(token) else ""
 
 _INSTALL_RE = re.compile(r"\b(?:install|add)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
 _REMOVE_RE = re.compile(r"\b(?:uninstall|remove|delete)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
@@ -136,6 +146,7 @@ async def run_app_action(
     confirm: ConfirmFn,
     status: StatusFn,
     switch: SwitchFn,
+    suggest: SuggestFn | None = None,
 ) -> str:
     """Install or remove an app. Returns a plain-language result for the user."""
     add = action.kind == "install_app"
@@ -157,12 +168,26 @@ async def run_app_action(
 
     await status(f"checking that {pkg} {'installs' if add else 'removes'} cleanly…")
     ok, diff = await _validate_in_worktree(flake_dir, hostname, edited)
+
+    # Typo / common-name recovery: ask the model what they meant, validate it too.
+    preamble = ""
+    if not ok and add and suggest is not None:
+        await status(f"'{pkg}' isn't a package — figuring out what you meant…")
+        cand = sanitize_attr(await suggest(action.target))
+        if cand and cand != pkg:
+            cand_edited = edit_packages(original, cand, add=True)
+            if cand_edited != original:
+                ok, diff = await _validate_in_worktree(flake_dir, hostname, cand_edited)
+                if ok:
+                    preamble = f"I couldn't find '{pkg}'. Did you mean '{cand}'?\n\n"
+                    pkg, edited = cand, cand_edited
+
     if not ok:
         verb = "install" if add else "remove"
         return f"I couldn't {verb} '{pkg}' — it didn't evaluate (is the name right?)."
 
     verb = "install" if add else "remove"
-    if not await confirm(f"This will {verb} {pkg}:\n\n{diff}\nApply and rebuild?"):
+    if not await confirm(f"{preamble}This will {verb} {pkg}:\n\n{diff}\nApply and rebuild?"):
         return "Cancelled — no changes made."
 
     src.write_text(edited)  # apply to the real tree
