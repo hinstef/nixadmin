@@ -71,6 +71,21 @@ Active services: `nixadmin-helper` (root), `nixadmin-daemon` (user),
 The one-time v2→v3 helper bootstrap was completed via a direct `sudo nixos-rebuild
 switch`; future `nixadmin-rebuild switch` works normally now.
 
+### Writes — deterministic action tier (LIVE)
+- Third routing tier: read · **known action** · open-ended change.
+- `install <app>` / `remove <app>` work on the **local chain alone** (no frontier):
+  parse → slot-extract → edit `home.packages` in an isolated **git worktree** →
+  validate with `nix eval` → show diff + confirm → apply to real tree → `switch`
+  via root helper → report the real result. Edit left uncommitted for review.
+- **Verified live end-to-end:** `install hello` → "Hello, world!" runnable; then
+  `remove hello` → config back to clean.
+- Mutation routing fixed: interrogative phrasing ("can you install…?") is a
+  question, not a write; remote is only "ready" with real credentials (no more
+  auth-error leaks); writes with no usable remote get a plain limitation.
+- **Deferred:** toggles (enable/disable a setting) — recognised but answered
+  "not yet"; safe nested-Nix-option editing needs per-option templates.
+- Needs `git` + `nix` on the daemon PATH (set in module.nix).
+
 ### Modules (10 live)
 - **Built-in (core):** apps, network, disk, services.
 - **External package `contrib/nixadmin-extras`** (via `nixadmin.modules` entry points,
