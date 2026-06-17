@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
+from nixadmin import actions
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -198,9 +199,23 @@ class Daemon:
             explicit=explicit, matched=matched, default_chain=self.cfg.default_chain
         )
 
-        # Mutation intent: changes need the remote chain's tools. The local chain
-        # is read-only and must never pretend to have acted.
+        # Mutation intent. First try the deterministic action tier (common writes
+        # like install/remove an app) — works locally, no frontier model needed.
         if mutation:
+            action = actions.parse_action(query.text)
+            if action and action.kind in ("install_app", "remove_app"):
+                await self._run_action(conn, query, action)
+                return
+            if action and action.kind == "toggle":
+                await conn.send(wire.Delta(
+                    id=query.id,
+                    text="I can only install and remove apps for now — changing "
+                         "settings like that isn't supported yet.",
+                ))
+                await conn.send(wire.Done(id=query.id, chain="local",
+                                          model=self.cfg.local_model))
+                return
+            # Open-ended change → remote agent (or a plain limitation).
             await self._handle_mutation(conn, query, desired, pinned, matched)
             return
 
@@ -215,6 +230,21 @@ class Daemon:
             await self._run_local(conn, query, matched)
         else:
             await self._run_remote(conn, query)
+
+    async def _run_action(
+        self, conn: ClientConn, query: wire.Query, action: actions.Action
+    ) -> None:
+        """Deterministic write — validated in a worktree, confirmed, then applied."""
+        result = await actions.run_app_action(
+            action,
+            flake_dir=self.cfg.flake_dir,
+            hostname=self.cfg.hostname,
+            confirm=lambda text: conn.confirm(query.id, text),
+            status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
+            switch=self.safety.apply_switch,
+        )
+        await conn.send(wire.Delta(id=query.id, text=result))
+        await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
 
     async def _handle_mutation(
         self, conn: ClientConn, query: wire.Query, desired: Chain, pinned: bool,

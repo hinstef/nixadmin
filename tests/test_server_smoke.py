@@ -89,7 +89,8 @@ async def test_mutation_without_remote_says_it_cannot(daemon_socket, monkeypatch
     try:
         reader, writer = await asyncio.open_unix_connection(daemon_socket)
         await _read_until(reader, "hello")
-        writer.write(wire.encode(wire.Query(id="q1", text="install firefox")).encode())
+        # An open-ended change (not a known app action) → needs the full assistant.
+        writer.write(wire.encode(wire.Query(id="q1", text="fix my wifi please")).encode())
         await writer.drain()
         text = ""
         async with asyncio.timeout(2.0):

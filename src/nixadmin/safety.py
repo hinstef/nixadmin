@@ -58,6 +58,12 @@ class SafetyGate:
             state.record_test(_looks_successful(output))
         return output
 
+    async def apply_switch(self) -> str:
+        """Run `switch` directly, for the deterministic action tier which has
+        already validated the change in an isolated worktree and confirmed with the
+        user. The root helper remains the privilege boundary."""
+        return await self._run_helper("switch")
+
     async def _run_helper(self, action: str) -> str:
         """Send the action to the root helper and collect its streamed output."""
         try:
