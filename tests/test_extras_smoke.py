@@ -9,6 +9,7 @@ modules only register once the package is installed in the daemon's env).
 from __future__ import annotations
 
 import nixadmin_extras.bluetooth as bluetooth
+import nixadmin_extras.health as health
 import nixadmin_extras.performance as performance
 import nixadmin_extras.power as power
 import nixadmin_extras.security as security
@@ -18,7 +19,7 @@ import nixadmin_extras.updates as updates
 from nixadmin.registry import load_modules
 from nixadmin.sdk import Module
 
-EXTRAS = [system, power, performance, bluetooth, updates, security]
+EXTRAS = [system, power, performance, bluetooth, updates, security, health]
 
 
 def test_all_extras_are_valid_modules():

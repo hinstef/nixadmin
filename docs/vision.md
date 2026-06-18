@@ -25,6 +25,27 @@ human intent → understand → act SAFELY → explain → (notice & offer)
 Deterministic core, model only at the edges, safety as infrastructure. It is
 OS-agnostic and model-agnostic by design.
 
+## Core principle: derive, don't hardcode
+
+Knowledge lives in **live state we can gather** (the system, nixpkgs, docs we can
+pull) — never baked into the codebase. The model's job is to **infer and judge over
+that real state**, not to store facts or recall them. (We proved the model is bad
+at recall and good at judgment: it fabricates package names, but correctly picks
+`steam` from real candidates, and diagnoses a dead panel from real process state.)
+
+This has been learned the hard way, repeatedly — every time, the fix was the same:
+
+| Hardcoded (wrong) | Derived + inferred (right) |
+|---|---|
+| `COMMON_APPS` list for typos | difflib over real `attrNames` → model judges |
+| `ALIASES` (chrome→google-chrome) | model maps the phrase to real candidates |
+| "a healthy COSMIC session = [list]" | dump live process/unit state → model infers from the symptom |
+
+The test for any new feature: **am I encoding knowledge, or gathering state and
+letting the model interpret it?** If the former, stop — derive it instead. Future
+grounding sources (pulled docs, nixpkgs metadata, man pages) extend this, never
+replace it with baked-in facts.
+
 ## The honest catch
 
 NixOS is an implementation detail to the *vision* but **load-bearing for the
