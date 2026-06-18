@@ -25,9 +25,10 @@ SAMPLE = """\
 @pytest.mark.parametrize("text,kind,target", [
     ("install steam", "install_app", "steam"),
     ("add spotify please", "install_app", "spotify"),
-    ("install chrome", "install_app", "google-chrome"),  # alias
+    ("install chrome", "install_app", "chrome"),          # judge maps it later
+    ("install google chrome", "install_app", "google chrome"),  # multi-word kept intact
     ("remove gimp", "remove_app", "gimp"),
-    ("uninstall the gimp", "remove_app", "gimp"),         # alias + 'the'
+    ("uninstall the gimp", "remove_app", "gimp"),         # filler 'the' dropped
     ("enable bluetooth", "toggle", "enable bluetooth"),
 ])
 def test_parse_action(text, kind, target):

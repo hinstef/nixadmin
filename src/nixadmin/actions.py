@@ -53,17 +53,6 @@ _ATTRNAMES_EXPR = (
     "in builtins.concatStringsSep \"\\n\" (builtins.attrNames p)"
 )
 
-# Natural phrases → nixpkgs attribute names. Extend as needed; unknown names are
-# tried verbatim and validated by the worktree build.
-ALIASES = {
-    "chrome": "google-chrome",
-    "google chrome": "google-chrome",
-    "vs code": "vscode",
-    "visual studio code": "vscode",
-    "the gimp": "gimp",
-    "signal": "signal-desktop",
-}
-
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
 SwitchFn = Callable[[], Awaitable[str]]
@@ -113,13 +102,12 @@ def parse_action(text: str) -> Action | None:
 
 
 def _normalize(phrase: str) -> str:
+    """Clean an extracted target: lowercase, drop filler words. Keep multi-word
+    phrases intact — the literal attempt handles single real attrs, and anything
+    else flows to the candidates+judge step, which needs the full phrase."""
     s = phrase.strip().rstrip("?.!").lower()
-    s = re.sub(r"\b(app|application|package|program|please|for me)\b", "", s).strip()
-    if s in ALIASES:
-        return ALIASES[s]
-    # Multi-word leftovers we don't recognise: take the first token (best effort;
-    # the worktree build is the real validator).
-    return s.split()[0] if s else s
+    s = re.sub(r"\b(the|a|an|app|application|package|program|please|for me)\b", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 # --------------------------------------------------------------------------- #
