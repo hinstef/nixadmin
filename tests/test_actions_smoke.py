@@ -1,14 +1,16 @@
-"""Smoke tests for the action tier — parsing and the pure package editor.
-
-The full worktree-validated executor is exercised live (it needs git + nix); here
-we cover the deterministic, pure pieces.
-"""
+"""Smoke tests for the action tier — parsing, the pure editor, and the executor's
+apply / cancel / revert + audit behaviour (worktree validation mocked, since it
+needs real git + nix; the rest of the path is real)."""
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from nixadmin.actions import edit_packages, fuzzy_candidates, parse_action
+import pytest
+from structlog.testing import capture_logs
+
+import nixadmin.actions as actions
+from nixadmin.actions import Action, edit_packages, fuzzy_candidates, parse_action
 from nixadmin.errors import NixadminError
 
 SAMPLE = """\
@@ -88,3 +90,71 @@ def test_fuzzy_candidates_surface_the_real_target(typo, must_include):
 
 def test_fuzzy_candidates_empty_for_nonsense():
     assert fuzzy_candidates("zzqwxyzzz", FAKE_NAMES) == []
+
+
+# --- executor: apply / cancel / revert + audit (worktree validation mocked) --- #
+
+@pytest.fixture
+def flake(tmp_path, monkeypatch):
+    """A throwaway flake dir with a real home.nix, and worktree validation stubbed
+    to succeed (the only genuinely external bit — needs git + nix)."""
+    home = tmp_path / "modules" / "home-manager"
+    home.mkdir(parents=True)
+    (home / "default.nix").write_text(SAMPLE)
+
+    async def fake_validate(flake_dir, hostname, edited):
+        return True, "+    hello"
+
+    monkeypatch.setattr(actions, "_validate_in_worktree", fake_validate)
+    return tmp_path
+
+
+def _home(flake_dir: Path) -> str:
+    return (flake_dir / "modules" / "home-manager" / "default.nix").read_text()
+
+
+async def _yes(_text): return True
+async def _no(_text): return False
+async def _noop(_text): return None
+async def _switch_ok(): return "Done. new configuration."
+
+
+async def test_action_applies_and_audits(flake):
+    with capture_logs() as logs:
+        out = await actions.run_app_action(
+            Action("install_app", "hello"),
+            flake_dir=str(flake), hostname="laptop",
+            confirm=_yes, status=_noop, switch=_switch_ok,
+        )
+    assert "installed" in out
+    assert "hello" in _home(flake)  # really written to the config
+    audit = [e for e in logs if e.get("event") == "action"]
+    assert audit and audit[0]["outcome"] == "installed"
+    assert audit[0]["package"] == "hello"
+
+
+async def test_action_cancel_audits_and_leaves_config(flake):
+    with capture_logs() as logs:
+        out = await actions.run_app_action(
+            Action("install_app", "hello"),
+            flake_dir=str(flake), hostname="laptop",
+            confirm=_no, status=_noop, switch=_switch_ok,
+        )
+    assert "cancelled" in out.lower()
+    assert "hello" not in _home(flake)  # nothing written
+    assert any(e.get("event") == "action" and e["outcome"] == "cancelled" for e in logs)
+
+
+async def test_action_revert_on_rebuild_failure(flake):
+    async def _switch_fail():
+        raise NixadminError("rebuild blew up")
+
+    with capture_logs() as logs:
+        out = await actions.run_app_action(
+            Action("install_app", "hello"),
+            flake_dir=str(flake), hostname="laptop",
+            confirm=_yes, status=_noop, switch=_switch_fail,
+        )
+    assert "reverted" in out.lower()
+    assert "hello" not in _home(flake)  # rolled back to original
+    assert any(e.get("event") == "action" and e["outcome"] == "failed" for e in logs)
