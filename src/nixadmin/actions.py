@@ -207,6 +207,9 @@ async def run_app_action(
 
     verb = "install" if add else "remove"
     if not await confirm(f"{preamble}This will {verb} {pkg}:\n\n{diff}\nApply and rebuild?"):
+        # Audit: structured event → journald. query_id/session ride contextvars.
+        log.info("action", kind=action.kind, requested=action.target, package=pkg,
+                 outcome="cancelled")
         return "Cancelled — no changes made."
 
     src.write_text(edited)  # apply to the real tree
@@ -215,8 +218,14 @@ async def run_app_action(
         result = await switch()
     except NixadminError as e:
         src.write_text(original)  # roll back the edit if the rebuild can't run
+        log.warning("action", kind=action.kind, requested=action.target, package=pkg,
+                    outcome="failed", error=str(e))
         return f"The rebuild failed, so I reverted the change. ({e})"
 
+    # Audit: the durable record of what nixadmin changed — query it from journald
+    # with: journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'
+    log.info("action", kind=action.kind, requested=action.target, package=pkg,
+             outcome="installed" if add else "removed", file=HOME_FILE)
     return (
         f"Done — {pkg} {'installed' if add else 'removed'}.\n{result}\n"
         "(The config edit is left uncommitted for you to review.)"
