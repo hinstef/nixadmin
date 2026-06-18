@@ -112,13 +112,13 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   is the next testing investment.
 
 ### Observability / proactive (next real work)
-- **Proactive detector (#2)** — TODO. A background watcher that catches the class
-  of failure that threw no error (silent panel death): "a tracked process
-  vanished" (dynamic liveness baseline, derive-don't-hardcode), "coredump
-  appeared", "error-rate spike". Reuses MonitorRunner; no buffer/no store —
-  journald *is* the persistent ring (683 MB, `/var/log/journal`); detector
-  watches → fires → queries journald live for context. Existing dbus `JobRemoved`
-  + poll monitors already cover failed-units and disk-full.
+- **Proactive detector (#2)** — TODO, **planned in detail**:
+  [`proactive-detectors-plan.md`](proactive-detectors-plan.md). Cold-resumable.
+  2a = two stateful core detectors in a new `detectors.py` (process-vanished via
+  dynamic baseline → catches the silent panel death; new-coredump) wired into
+  MonitorRunner, emitting `Event`s. No buffer/store — journald is the ring.
+  2b (deferred) = desktop notifications + model-phrased diagnosis + offered fix.
+  2c (deferred) = error-rate spike, OOM, baseline persistence.
 - On-demand diagnosis (#1) — DONE via the `health` module (live journald queries).
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
