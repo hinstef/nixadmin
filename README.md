@@ -1,5 +1,11 @@
 # nixadmin
 
+> **A computer you can give to someone you love.**
+> The goal is making compute *human* — a machine that adapts to the person, not
+> the other way around. NixOS and the LLM are implementation details; the product
+> is the safe, private, explainable loop between human intent and machine state.
+> See [`docs/vision.md`](docs/vision.md).
+
 Ambient system intelligence for NixOS — a daemon that knows your machine's state,
 explains it in plain language, and (with consent) fixes it. Not a chatbot: a
 personal observability layer with a conversational interface on top.

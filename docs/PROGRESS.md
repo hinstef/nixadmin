@@ -1,7 +1,14 @@
 # Build Progress — nixadmin v3
 
 Living checklist for the greenfield build on `feat/v3-daemon`. Update as layers
-land. Source of truth for *what* to build is [`nixadmin-v3-spec.md`](nixadmin-v3-spec.md).
+land. Source of truth for *what* to build is [`nixadmin-v3-spec.md`](nixadmin-v3-spec.md);
+the *why* (and what we're really building) is [`vision.md`](vision.md).
+
+> **North star:** *a computer you can give to someone you love.* Judge features by
+> "does this make the person think *less* in machine terms?" By that test the
+> highest-leverage next work is **UX (GTK/voice — the terminal is the least human
+> surface)** and **proactive nudges**, over more modules. Trust/safety *is* the
+> human work.
 
 ## How to resume
 
