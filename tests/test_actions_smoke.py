@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nixadmin.actions import closest_app, edit_packages, parse_action
+from nixadmin.actions import edit_packages, fuzzy_candidates, parse_action
 from nixadmin.errors import NixadminError
 
 SAMPLE = """\
@@ -68,18 +68,22 @@ def test_edit_no_list_raises():
         edit_packages("{ }:\n{ }\n", "steam", add=True)
 
 
-@pytest.mark.parametrize("typo,expected", [
+# A stand-in for the real (huge) nixpkgs name list — fuzzy_candidates is the pure
+# part; the model judge over these candidates is exercised live.
+FAKE_NAMES = ["steam", "stem", "stemroller", "firefox", "foremost", "chromium",
+              "chrome-gnome-shell", "discord", "blender", "vlc", "obs-studio"]
+
+
+@pytest.mark.parametrize("typo,must_include", [
     ("stem", "steam"),
-    ("steram", "steam"),
-    ("fire fox", "firefox"),
-    ("chrom", "chromium"),
+    ("forefax", "firefox"),
     ("discrod", "discord"),
     ("blendr", "blender"),
 ])
-def test_closest_app_corrects_common_typos(typo, expected):
-    assert closest_app(typo) == expected
+def test_fuzzy_candidates_surface_the_real_target(typo, must_include):
+    cands = fuzzy_candidates(typo, FAKE_NAMES)
+    assert must_include in cands  # the real package is among the candidates to judge
 
 
-@pytest.mark.parametrize("nonsense", ["zzzqwxyz", "asdfghjkl", "xyzzy123"])
-def test_closest_app_returns_empty_for_no_match(nonsense):
-    assert closest_app(nonsense) == ""
+def test_fuzzy_candidates_empty_for_nonsense():
+    assert fuzzy_candidates("zzqwxyzzz", FAKE_NAMES) == []

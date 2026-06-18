@@ -231,6 +231,16 @@ class Daemon:
         else:
             await self._run_remote(conn, query)
 
+    async def _suggest_package(self, phrase: str) -> str:
+        """Real nixpkgs candidates (difflib) judged by the local model."""
+        names = await actions.load_package_names(self.cfg.flake_dir)
+        candidates = actions.fuzzy_candidates(phrase, names)
+        if not candidates:
+            return ""
+        return await local_llm.judge_package(
+            phrase, candidates, model=self.cfg.local_model, url=self.cfg.local_url
+        )
+
     async def _run_action(
         self, conn: ClientConn, query: wire.Query, action: actions.Action
     ) -> None:
@@ -242,6 +252,7 @@ class Daemon:
             confirm=lambda text: conn.confirm(query.id, text),
             status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
             switch=self.safety.apply_switch,
+            suggest=self._suggest_package,
         )
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))

@@ -36,27 +36,22 @@ log = get_logger(__name__)
 
 HOME_FILE = "modules/home-manager/default.nix"
 
-# Curated common nixpkgs apps, used for deterministic typo correction (a 3B local
-# model is unreliable at fuzzy name matching; difflib against this list is not).
-# Extend freely — a wrong guess is still gated by "did you mean?" + worktree eval.
-COMMON_APPS = [
-    "firefox", "chromium", "google-chrome", "brave", "tor-browser",
-    "vlc", "mpv", "obs-studio", "audacity", "handbrake", "kdenlive", "shotcut",
-    "spotify", "discord", "slack", "telegram-desktop", "signal-desktop",
-    "element-desktop", "zoom-us", "teams-for-linux", "thunderbird",
-    "gimp", "inkscape", "krita", "blender", "darktable", "freecad", "openscad",
-    "libreoffice", "onlyoffice-bin", "obsidian", "logseq", "zotero", "calibre",
-    "vscode", "vscodium", "sublime4", "neovim", "vim", "emacs", "zed-editor",
-    "git", "gh", "lazygit", "docker", "podman", "podman-compose",
-    "nodejs", "python3", "go", "rustc", "cargo", "uv", "ruff",
-    "kubectl", "k9s", "kubernetes-helm", "terraform", "ansible",
-    "keepassxc", "bitwarden", "nextcloud-client", "syncthing", "rclone",
-    "transmission", "qbittorrent", "deluge",
-    "htop", "btop", "fastfetch", "neofetch", "tree", "ripgrep", "fd", "bat",
-    "eza", "fzf", "jq", "yq", "curl", "wget", "tmux", "zellij",
-    "steam", "lutris", "heroic", "prismlauncher", "mangohud",
-    "mission-center", "gnome-disk-utility", "flatseal", "wireshark", "vlc",
-]
+# In-memory projection of the pinned nixpkgs attribute names. Built lazily from
+# the local store (no shadow file, no nix-internal DB), held for the daemon's
+# lifetime, and naturally refreshed when the daemon restarts on a rebuild.
+_names_cache: dict[str, list[str]] = {}
+_names_lock = asyncio.Lock()
+
+# Nix expression: attribute names of the flake's pinned nixpkgs (names only —
+# attrNames does not evaluate the packages, so this is cheap). Falls back to the
+# NIX_PATH <nixpkgs> if the flake has no input named "nixpkgs".
+_ATTRNAMES_EXPR = (
+    'let f = builtins.getFlake "path:{flake}"; '
+    'sys = builtins.currentSystem; '
+    'np = (f.inputs.nixpkgs or null); '
+    'p = if np != null then np.legacyPackages.${{sys}} else import <nixpkgs> {{}}; '
+    "in builtins.concatStringsSep \"\\n\" (builtins.attrNames p)"
+)
 
 # Natural phrases → nixpkgs attribute names. Extend as needed; unknown names are
 # tried verbatim and validated by the worktree build.
@@ -72,12 +67,28 @@ ALIASES = {
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
 SwitchFn = Callable[[], Awaitable[str]]
+# Given a phrase, return a real package name the user likely meant, or ''.
+SuggestFn = Callable[[str], Awaitable[str]]
 
 
-def closest_app(name: str) -> str:
-    """Deterministic typo correction: nearest common app by edit distance, or ''."""
-    matches = difflib.get_close_matches(name.lower(), COMMON_APPS, n=1, cutoff=0.6)
-    return matches[0] if matches else ""
+async def load_package_names(flake_dir: str) -> list[str]:
+    """Attribute names of the pinned nixpkgs, cached in memory for the daemon's
+    lifetime. Empty list if evaluation fails (suggestions simply disabled)."""
+    async with _names_lock:
+        if flake_dir in _names_cache:
+            return _names_cache[flake_dir]
+        expr = _ATTRNAMES_EXPR.format(flake=flake_dir)
+        rc, out = await _run("nix", "eval", "--impure", "--raw", "--expr", expr)
+        names = out.split("\n") if rc == 0 and out else []
+        if not names:
+            log.warning("could not load nixpkgs names; suggestions disabled")
+        _names_cache[flake_dir] = names
+        return names
+
+
+def fuzzy_candidates(query: str, names: list[str], *, n: int = 8) -> list[str]:
+    """Nearest real package names by edit distance — candidates for the judge."""
+    return difflib.get_close_matches(query.lower(), names, n=n, cutoff=0.5)
 
 _INSTALL_RE = re.compile(r"\b(?:install|add)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
 _REMOVE_RE = re.compile(r"\b(?:uninstall|remove|delete)\b\s+(?:the\s+)?(.+)", re.IGNORECASE)
@@ -165,6 +176,7 @@ async def run_app_action(
     confirm: ConfirmFn,
     status: StatusFn,
     switch: SwitchFn,
+    suggest: SuggestFn | None = None,
 ) -> str:
     """Install or remove an app. Returns a plain-language result for the user."""
     add = action.kind == "install_app"
@@ -187,12 +199,13 @@ async def run_app_action(
     await status(f"checking that {pkg} {'installs' if add else 'removes'} cleanly…")
     ok, diff = await _validate_in_worktree(flake_dir, hostname, edited)
 
-    # Typo recovery: deterministic nearest common app, validated in the worktree too.
+    # Recovery: real candidates from nixpkgs (difflib) + the model judges which one
+    # (its strength). The candidate is a real attribute, then worktree-validated too.
     preamble = ""
-    if not ok and add:
-        cand = closest_app(pkg)
+    if not ok and add and suggest is not None:
+        await status(f"'{pkg}' isn't a package — figuring out what you meant…")
+        cand = await suggest(action.target)
         if cand and cand != pkg:
-            await status(f"'{pkg}' isn't a package — did you mean '{cand}'? checking…")
             cand_edited = edit_packages(original, cand, add=True)
             if cand_edited != original:
                 ok, diff = await _validate_in_worktree(flake_dir, hostname, cand_edited)

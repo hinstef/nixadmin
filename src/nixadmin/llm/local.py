@@ -95,6 +95,43 @@ async def classify(query: str, modules: list[Module], *, model: str, url: str) -
         return []
 
 
+async def judge_package(query: str, candidates: list[str], *, model: str, url: str) -> str:
+    """Pick the package the user most likely meant from REAL candidates.
+
+    The model recognises/ranks (its strength) rather than recalls (its weakness),
+    and can only return a name that actually exists — the result is constrained to
+    the candidate list. Returns '' if it picks nothing recognisable.
+    """
+    if not candidates:
+        return ""
+    opts = ", ".join(candidates)
+    prompt = (
+        f"A user typed '{query}' to install an app. Which of these real nixpkgs "
+        "packages did they most likely mean? Reply with ONLY the exact package name "
+        f"from the list, or 'none'.\nOptions: {opts}"
+    )
+    body = {
+        "model": model, "prompt": prompt, "stream": False,
+        "options": {"num_predict": 16, "temperature": 0},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{url}/api/generate", json=body)
+            r.raise_for_status()
+            reply = r.json().get("response", "").strip().lower()
+    except Exception as e:  # noqa: BLE001 — best-effort
+        log.warning("judge_package failed", error=str(e))
+        return ""
+    # Constrain to a real candidate: exact match, then substring fallback.
+    for c in candidates:
+        if c.lower() == reply:
+            return c
+    for c in candidates:
+        if c.lower() in reply:
+            return c
+    return ""
+
+
 async def summarize(message: str, *, model: str, url: str) -> AsyncIterator[str]:
     """Stream the local model's answer to an already-augmented message."""
     body = {
