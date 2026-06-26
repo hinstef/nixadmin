@@ -26,10 +26,13 @@ log = get_logger(__name__)
 CLASSIFY_TIMEOUT = 2.0  # cold-start guard (seconds)
 
 LOCAL_SYSTEM_PROMPT = (
-    "You are a sysadmin assistant. The user is non-technical.\n"
-    "STRICT: ONE sentence. Stop after the period. No lists, no caveats.\n"
-    "Good: 'Yes, your WiFi is connected and the internet is working.'\n"
-    "Use the inline system data to answer. Never mention where the data came from.\n"
+    "You are a sysadmin assistant for a non-technical user. Use ONLY the inline "
+    "system data to answer; never mention where it came from; never invent details.\n"
+    "If everything is fine: answer in ONE short sentence "
+    "(e.g. 'Yes, your WiFi is connected and the internet is working.').\n"
+    "If something is wrong: in at most THREE short sentences say (1) what is wrong, "
+    "(2) why — quote the specific error or cause from the data, and (3) the most "
+    "likely fix in plain words. No lists, no jargon.\n"
     "Never make changes unless explicitly asked."
 )
 
