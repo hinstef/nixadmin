@@ -123,6 +123,85 @@ switch`; future `nixadmin-rebuild switch` works normally now.
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
 
+### Quality & robustness backlog (2026-06-17 review)
+
+Grounded review of the privilege path. Tiered by stakes — for a tool that edits
+config and runs `nixos-rebuild` as root, robustness = *the privilege path can't
+lie or race*. File:line refs so this is cold-resumable.
+
+**Tooling / process:**
+- [ ] **Adopt [beads](https://github.com/steveyegge/beads) (`bd`) for task tracking.**
+  This project is outgrowing a hand-maintained markdown checklist. Beads is a
+  git-backed issue tracker (issues as JSON/JSONL in-repo, dependency graph, CLI +
+  agent-friendly) — keeps tasks versioned alongside the code and survives across
+  sessions without a context dump. Migrate this backlog + the proactive-detectors
+  plan into `bd` issues with deps; keep PROGRESS.md as the narrative/north-star,
+  let `bd` own the granular task state.
+
+**Tier 1 — safety invariants (correctness bugs, do first):**
+- [x] **Gate on the real exit code, not a string match.** *(done 2026-06-17)*
+  `_run_helper` now returns `(output, exit_code)`; `rebuild` does
+  `state.record_test(code == 0)`; `_looks_successful` removed. Also fixed a latent
+  bug: `apply_switch` returned a string on failure, so the action tier's
+  revert-on-rebuild-failure path never fired — it now raises `SafetyError` on a
+  nonzero exit (matches the existing `test_action_revert_on_rebuild_failure`
+  contract). Covered by 5 new gate tests in `test_safety_context_smoke.py`,
+  including the two regressions (fail without the word "failed"; pass with "0
+  failed" in output). `nix flake check` green.
+- [x] **Serialize rebuilds in the helper + deadlock safeguard.** *(done 2026-06-17)*
+  Module-level **in-memory** `_rebuild_lock` in `nixadmin-helper.py` held around
+  `Popen`/`wait`, so only one rebuild runs at a time even if a second client
+  connects directly (bypassing the daemon's per-session lock). A waiting client
+  gets a "another rebuild is in progress; waiting…" stream line.
+  - **Deadlock safety:** in-memory (not a lockfile) on purpose — a helper crash
+    drops the lock and systemd restarts unlocked; a pidfile would leave a stale
+    lock. The only uncovered case (a rebuild that *hangs* forever) is bounded by a
+    `threading.Timer` watchdog that `proc.kill()`s any rebuild exceeding
+    `NIXADMIN_REBUILD_TIMEOUT` (default 3600s), which releases the lock via
+    `finally`. We never time-release or steal the lock mid-rebuild (that would
+    re-introduce concurrent activation).
+  - A dead client pipe stops writes (`_send` returns False) without orphaning the
+    rebuild — output keeps draining so the child never blocks on a full pipe.
+  - Validated live at next `nixos-rebuild` (the helper's flake8 lint runs at module
+    build, not in `nix flake check`).
+- [x] **Partial-switch honesty → automatic system rollback.** *(done 2026-06-17)*
+  On a switch failure the action tier now decides by the **system profile symlink**
+  (`_system_generation()`): if it *advanced*, the switch failed mid-activation, so
+  we automatically `apply_revert()` (`switch --rollback`) to the last good
+  generation AND revert the config edit (`outcome=failed_rolled_back`). If the
+  profile is *unchanged*, it was a build-phase failure (system untouched) — revert
+  the file only, **never** roll back (that would undo a healthy prior generation).
+  If the rollback itself fails we say so plainly ("the system may be in a mixed
+  state", `outcome=rollback_failed`). `apply_revert` added to `SafetyGate`; wired
+  in `server._run_action`. 3 new tests cover all three branches. `nix flake check`
+  green.
+
+**Tier 2 — test the dangerous code (coverage is thin exactly where it matters):**
+- [x] **Safety-gate protocol test** against a fake helper socket *(done 2026-06-17,
+  with Tier 1 #1)*: `FakeHelper` speaks the newline-JSON helper protocol; tests
+  cover test→switch enablement, failed-test blocks switch, and `apply_switch`
+  raise/return on the real `_run_helper` socket path.
+- [ ] **Property tests for `edit_packages`** (hypothesis): `add` idempotent;
+  `add`+`remove` round-trips to original; `remove` of absent always raises;
+  list delimiters survive. It's the one fn that rewrites the user's config.
+- [ ] **Helper `revert → switch --rollback` mapping** (`nixadmin-helper.py:52-53`)
+  untested + lives outside the package. Add a unit even as a script.
+
+**Tier 3 — operational robustness:**
+- [ ] **Self-healing worktrees.** SIGKILL mid-`_validate_in_worktree` leaks a
+  worktree + tmpdir and trips the next `worktree add`. Run `git worktree prune`
+  at daemon startup.
+- [ ] **Daemon supervision.** systemd `Restart=on-failure` + backoff, and
+  `WatchdogSec`/`sd_notify` so a *hung* daemon (wedged on a helper read) restarts.
+- [ ] **Version the client↔daemon wire** in the hello handshake (module ABI has
+  `spec_version`; the wire protocol does not) — stale client should fail loud.
+
+**Tier 4 — when there's slack:**
+- [ ] Helper read timeout in `_run_helper` (`safety.py:80`) so a stuck helper
+  doesn't hang the daemon forever.
+- [ ] Keep `litellm` pinned + lazy-imported so the local-only path never loads the
+  heavy/remote-surface dep.
+
 ### Follow-ups (optional, not blocking — v3 fully works on the local chain)
 - Remote chain needs a Hermes proxy / API base (Claude subscription) before use.
   `defaultChain="local"` so the system works without it today.

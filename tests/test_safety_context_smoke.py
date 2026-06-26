@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from nixadmin.context import ContextCache
@@ -37,6 +40,85 @@ async def test_unknown_action_raises():
     gate = SafetyGate("/nonexistent.sock")
     with pytest.raises(SafetyError):
         await gate.rebuild("nuke", state=SessionState(), confirm=_yes)
+
+
+# --- gate protocol against a fake helper socket (real _run_helper path) ----- #
+
+
+class FakeHelper:
+    """Stand-in for the root nixadmin-helper: speaks the same newline-JSON
+    protocol and returns a configurable ``(stream, exit_code)``."""
+
+    def __init__(self, sock_path: str, *, output: str = "", exit_code: int = 0) -> None:
+        self.sock_path = sock_path
+        self.output = output
+        self.exit_code = exit_code
+        self.requests: list[dict[str, str]] = []
+        self._server: asyncio.AbstractServer | None = None
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        raw = await reader.readline()
+        self.requests.append(json.loads(raw.decode()))
+        if self.output:
+            writer.write((json.dumps({"stream": self.output}) + "\n").encode())
+        writer.write((json.dumps({"exit": self.exit_code}) + "\n").encode())
+        await writer.drain()
+        writer.close()
+
+    async def __aenter__(self) -> FakeHelper:
+        self._server = await asyncio.start_unix_server(self._handle, path=self.sock_path)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        assert self._server is not None
+        self._server.close()
+        await self._server.wait_closed()
+
+
+@pytest.fixture
+def sock(tmp_path) -> str:
+    return str(tmp_path / "helper.sock")
+
+
+async def test_successful_test_enables_switch(sock):
+    state = SessionState()
+    async with FakeHelper(sock, output="building...\nok", exit_code=0):
+        await SafetyGate(sock).rebuild("test", state=state, confirm=_yes)
+    assert state.last_test_ok is True
+
+
+async def test_failed_test_blocks_switch_even_without_the_word_failed(sock):
+    """The regression #1 fixes: a nonzero test whose output never says 'failed'
+    must still be recorded as a failure and block a subsequent switch."""
+    state = SessionState()
+    async with FakeHelper(sock, output="error: build broke", exit_code=1):
+        out = await SafetyGate(sock).rebuild("test", state=state, confirm=_yes)
+    assert state.last_test_ok is False
+    assert "exit 1" in out
+    # switch is refused before reaching the helper, because the test failed
+    refused = await SafetyGate(sock).rebuild("switch", state=state, confirm=_yes)
+    assert "test" in refused.lower()
+
+
+async def test_passing_test_with_word_failed_in_output_still_passes(sock):
+    """Inverse: exit 0 with '0 failed' in the output must NOT be misread as a
+    failure (the old substring heuristic got this exactly wrong)."""
+    state = SessionState()
+    async with FakeHelper(sock, output="0 packages failed", exit_code=0):
+        await SafetyGate(sock).rebuild("test", state=state, confirm=_yes)
+    assert state.last_test_ok is True
+
+
+async def test_apply_switch_raises_on_nonzero(sock):
+    async with FakeHelper(sock, output="boom", exit_code=2):
+        with pytest.raises(SafetyError, match="exit 2"):
+            await SafetyGate(sock).apply_switch()
+
+
+async def test_apply_switch_returns_output_on_success(sock):
+    async with FakeHelper(sock, output="activated", exit_code=0):
+        out = await SafetyGate(sock).apply_switch()
+    assert "activated" in out
 
 
 async def test_context_cache_assembles_and_caches():

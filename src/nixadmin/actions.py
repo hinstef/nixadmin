@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import os
 import re
 import shutil
 import tempfile
@@ -56,8 +57,20 @@ _ATTRNAMES_EXPR = (
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
 SwitchFn = Callable[[], Awaitable[str]]
+RollbackFn = Callable[[], Awaitable[str]]
 # Given a phrase, return a real package name the user likely meant, or ''.
 SuggestFn = Callable[[str], Awaitable[str]]
+
+
+def _system_generation() -> str | None:
+    """Target of the system profile symlink. It advances when a new generation is
+    created — i.e. once a rebuild gets *past the build phase*. None if unreadable.
+    Used to tell a build-phase failure (system untouched) from a mid-activation
+    failure (system possibly in a mixed state, rollback warranted)."""
+    try:
+        return os.readlink("/nix/var/nix/profiles/system")
+    except OSError:
+        return None
 
 
 async def load_package_names(flake_dir: str) -> list[str]:
@@ -164,6 +177,7 @@ async def run_app_action(
     confirm: ConfirmFn,
     status: StatusFn,
     switch: SwitchFn,
+    rollback: RollbackFn | None = None,
     suggest: SuggestFn | None = None,
 ) -> str:
     """Install or remove an app. Returns a plain-language result for the user."""
@@ -214,13 +228,37 @@ async def run_app_action(
 
     src.write_text(edited)  # apply to the real tree
     await status("applying the change and rebuilding…")
+    gen_before = _system_generation()
     try:
         result = await switch()
     except NixadminError as e:
-        src.write_text(original)  # roll back the edit if the rebuild can't run
+        src.write_text(original)  # always revert the source edit
+        # Did a new generation get activated before the failure? If the system
+        # profile advanced, the switch failed *mid-activation* and the running
+        # system may be in a mixed state — roll it back to the last good
+        # generation. If the profile is unchanged the build failed first and the
+        # system was never touched, so reverting the file is enough. (Never roll
+        # back on a build failure — that would undo a healthy prior generation.)
+        if rollback is not None and _system_generation() != gen_before:
+            await status("the rebuild failed mid-activation — rolling the system "
+                         "back to the last working generation…")
+            try:
+                await rollback()
+            except NixadminError as re:
+                log.error("action", kind=action.kind, requested=action.target,
+                          package=pkg, outcome="rollback_failed",
+                          error=f"{e}; rollback: {re}")
+                return ("The rebuild failed partway through AND the automatic "
+                        "rollback failed — the system may be in a mixed state. "
+                        f"Please roll back manually. ({e}; rollback: {re})")
+            log.warning("action", kind=action.kind, requested=action.target,
+                        package=pkg, outcome="failed_rolled_back", error=str(e))
+            return ("The rebuild failed partway through, so I rolled the system back "
+                    "to the previous working generation and reverted the config "
+                    f"edit. ({e})")
         log.warning("action", kind=action.kind, requested=action.target, package=pkg,
                     outcome="failed", error=str(e))
-        return f"The rebuild failed, so I reverted the change. ({e})"
+        return f"The rebuild failed before anything changed, so I reverted the config edit. ({e})"
 
     # Audit: the durable record of what nixadmin changed — query it from journald
     # with: journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'

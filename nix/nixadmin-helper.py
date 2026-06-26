@@ -21,8 +21,35 @@ import threading
 SOCKET_PATH = "/run/nixadmin-helper.sock"
 ALLOWED_ACTIONS = {"test", "switch", "revert", "boot"}
 
+# Serialize rebuilds: this socket is the privilege boundary, and any client in the
+# nixadmin group can connect directly (bypassing the daemon's per-session lock).
+# Two concurrent activations can leave the system in a mixed generation state, so
+# only one rebuild runs at a time; a second request waits its turn.
+#
+# The lock is intentionally IN-MEMORY (not a lockfile): if the helper crashes the
+# lock dies with it and systemd restarts unlocked — a pidfile/flock would instead
+# leave a stale lock and deadlock. The one case in-memory can't cover is a rebuild
+# that *hangs* forever (finally never runs), so a watchdog kills any rebuild that
+# exceeds REBUILD_TIMEOUT_S, which releases the lock via finally. We never time-
+# release or steal the lock while a rebuild is live — that would re-introduce the
+# concurrent-activation corruption this lock exists to prevent.
+_rebuild_lock = threading.Lock()
+
+# Backstop against a genuinely hung rebuild — generous, not a cap on slow builds.
+REBUILD_TIMEOUT_S = int(os.environ.get("NIXADMIN_REBUILD_TIMEOUT", "3600"))
+
 FLAKE_DIR = os.environ["NIXADMIN_FLAKE_DIR"]
 HOSTNAME   = os.environ["NIXADMIN_HOSTNAME"]
+
+
+def _send(f, obj) -> bool:
+    """Write one newline-JSON message. Returns False if the client is gone
+    (broken pipe) so the caller can stop writing without aborting the rebuild."""
+    try:
+        f.write(json.dumps(obj).encode() + b"\n")
+        return True
+    except (BrokenPipeError, OSError):
+        return False
 
 
 def handle_client(conn: socket.socket) -> None:
@@ -55,19 +82,39 @@ def handle_client(conn: socket.socket) -> None:
                 cmd = ["/run/current-system/sw/bin/nixos-rebuild", action, "--flake", f"path:{FLAKE_DIR}#{HOSTNAME}"]
             # "boot" stages the new generation for next reboot without activating it live
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # merge stderr into stdout
-                text=True,
-                bufsize=1,                 # line-buffered
-            )
-
-            for line in proc.stdout:
-                f.write(json.dumps({"stream": line}).encode() + b"\n")
-
-            proc.wait()
-            f.write(json.dumps({"exit": proc.returncode}).encode() + b"\n")
+            # Only one rebuild at a time. Tell the client if it has to wait.
+            if not _rebuild_lock.acquire(blocking=False):
+                _send(f, {"stream": "another rebuild is in progress; waiting…\n"})
+                _rebuild_lock.acquire()
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # merge stderr into stdout
+                    text=True,
+                    bufsize=1,                 # line-buffered
+                )
+                # Watchdog: kill a rebuild that hangs past the timeout, regardless
+                # of where we're blocked (the read loop, not just wait()). Killing
+                # it closes stdout -> the loop ends -> the lock is released below.
+                watchdog = threading.Timer(REBUILD_TIMEOUT_S, proc.kill)
+                watchdog.start()
+                try:
+                    client_alive = True
+                    for line in proc.stdout:
+                        # If the client vanished, stop writing but keep draining so
+                        # the rebuild doesn't block on a full pipe (and isn't orphaned).
+                        if client_alive and not _send(f, {"stream": line}):
+                            client_alive = False
+                    proc.wait()
+                finally:
+                    watchdog.cancel()
+                if proc.returncode is not None and proc.returncode < 0:
+                    _send(f, {"stream": f"rebuild aborted after {REBUILD_TIMEOUT_S}s "
+                                        f"(or killed: signal {-proc.returncode}).\n"})
+            finally:
+                _rebuild_lock.release()
+            _send(f, {"exit": proc.returncode})
 
     except BrokenPipeError:
         pass  # client disconnected mid-stream — fine

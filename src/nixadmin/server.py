@@ -252,6 +252,7 @@ class Daemon:
             confirm=lambda text: conn.confirm(query.id, text),
             status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
             switch=self.safety.apply_switch,
+            rollback=self.safety.apply_revert,
             suggest=self._suggest_package,
         )
         await conn.send(wire.Delta(id=query.id, text=result))

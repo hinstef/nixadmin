@@ -145,16 +145,76 @@ async def test_action_cancel_audits_and_leaves_config(flake):
     assert any(e.get("event") == "action" and e["outcome"] == "cancelled" for e in logs)
 
 
-async def test_action_revert_on_rebuild_failure(flake):
+async def test_action_revert_on_rebuild_failure(flake, monkeypatch):
+    # Build-phase failure: the system generation never advanced, so we must NOT
+    # roll the system back — just revert the config edit.
+    monkeypatch.setattr(actions, "_system_generation", lambda: "system-1-link")
+
     async def _switch_fail():
         raise NixadminError("rebuild blew up")
+
+    rolled = {"called": False}
+
+    async def _rollback():
+        rolled["called"] = True
+        return "should not happen"
 
     with capture_logs() as logs:
         out = await actions.run_app_action(
             Action("install_app", "hello"),
             flake_dir=str(flake), hostname="laptop",
-            confirm=_yes, status=_noop, switch=_switch_fail,
+            confirm=_yes, status=_noop, switch=_switch_fail, rollback=_rollback,
         )
     assert "reverted" in out.lower()
-    assert "hello" not in _home(flake)  # rolled back to original
+    assert not rolled["called"]  # build failure → no system rollback
+    assert "hello" not in _home(flake)  # config edit rolled back
     assert any(e.get("event") == "action" and e["outcome"] == "failed" for e in logs)
+
+
+async def test_action_rolls_system_back_on_mid_activation_failure(flake, monkeypatch):
+    # The profile advanced before the switch failed → a generation was activated,
+    # so the system may be in a mixed state and must be rolled back.
+    gens = iter(["system-1-link", "system-2-link"])
+    monkeypatch.setattr(actions, "_system_generation", lambda: next(gens))
+
+    async def _switch_fail():
+        raise NixadminError("activation died")
+
+    rolled = {"called": False}
+
+    async def _rollback():
+        rolled["called"] = True
+        return "rolled back to generation 1"
+
+    with capture_logs() as logs:
+        out = await actions.run_app_action(
+            Action("install_app", "hello"),
+            flake_dir=str(flake), hostname="laptop",
+            confirm=_yes, status=_noop, switch=_switch_fail, rollback=_rollback,
+        )
+    assert rolled["called"]  # system rolled back
+    assert "rolled the system back" in out.lower()
+    assert "hello" not in _home(flake)  # config edit also reverted
+    assert any(e.get("event") == "action" and e["outcome"] == "failed_rolled_back"
+               for e in logs)
+
+
+async def test_action_reports_mixed_state_when_rollback_also_fails(flake, monkeypatch):
+    gens = iter(["system-1-link", "system-2-link"])
+    monkeypatch.setattr(actions, "_system_generation", lambda: next(gens))
+
+    async def _switch_fail():
+        raise NixadminError("activation died")
+
+    async def _rollback_fail():
+        raise NixadminError("rollback blew up too")
+
+    with capture_logs() as logs:
+        out = await actions.run_app_action(
+            Action("install_app", "hello"),
+            flake_dir=str(flake), hostname="laptop",
+            confirm=_yes, status=_noop, switch=_switch_fail, rollback=_rollback_fail,
+        )
+    assert "mixed state" in out.lower()  # honest about the worst case
+    assert any(e.get("event") == "action" and e["outcome"] == "rollback_failed"
+               for e in logs)

@@ -52,20 +52,40 @@ class SafetyGate:
                 return "Cancelled — no changes were made."
 
         log.info("rebuild dispatch", action=action)
-        output = await self._run_helper(action)
+        output, code = await self._run_helper(action)
 
+        # The test→switch invariant gates on the helper's real exit code, never on
+        # whether the word "failed" happens to appear in the build output.
         if action == "test":
-            state.record_test(_looks_successful(output))
-        return output
+            state.record_test(code == 0)
+        if code != 0:
+            return f"{output}\n(rebuild failed, exit {code})".strip()
+        return output or "(done)"
 
     async def apply_switch(self) -> str:
         """Run `switch` directly, for the deterministic action tier which has
         already validated the change in an isolated worktree and confirmed with the
-        user. The root helper remains the privilege boundary."""
-        return await self._run_helper("switch")
+        user. The root helper remains the privilege boundary.
 
-    async def _run_helper(self, action: str) -> str:
-        """Send the action to the root helper and collect its streamed output."""
+        Raises :class:`SafetyError` on a nonzero rebuild, so the action tier can
+        revert its config edit."""
+        output, code = await self._run_helper("switch")
+        if code != 0:
+            raise SafetyError(f"rebuild failed (exit {code}):\n{output}".strip())
+        return output or "(done)"
+
+    async def apply_revert(self) -> str:
+        """Roll the system back to the previous generation (`switch --rollback`),
+        for the action tier's recovery when a switch fails mid-activation. Raises
+        :class:`SafetyError` if the rollback itself fails."""
+        output, code = await self._run_helper("revert")
+        if code != 0:
+            raise SafetyError(f"rollback failed (exit {code}):\n{output}".strip())
+        return output or "(done)"
+
+    async def _run_helper(self, action: str) -> tuple[str, int]:
+        """Send the action to the root helper, collect its streamed output, and
+        return ``(output, exit_code)``."""
         try:
             reader, writer = await asyncio.open_unix_connection(self._socket)
         except OSError as e:
@@ -88,11 +108,4 @@ class SafetyGate:
                 exit_code = msg["exit"]
         writer.close()
 
-        out = "".join(chunks).strip()
-        if exit_code != 0:
-            return f"{out}\n(rebuild failed, exit {exit_code})".strip()
-        return out or "(done)"
-
-
-def _looks_successful(output: str) -> bool:
-    return "failed" not in output.lower()
+        return "".join(chunks).strip(), exit_code
