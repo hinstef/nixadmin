@@ -139,6 +139,22 @@ lie or race*. File:line refs so this is cold-resumable.
   let `bd` own the granular task state.
 
 **Tier 1 — safety invariants (correctness bugs, do first):**
+- [ ] **Run `nixos-rebuild` in a detached cgroup, not the helper's.** *(NEW —
+  reproduced live 2026-06-26, HIGH priority)* The helper spawns `nixos-rebuild` as
+  a child of `nixadmin-helper.service`. When the new config's
+  `switch-to-configuration` restarts the helper unit (i.e. **any deploy that
+  changes the helper itself**), stopping that unit tears down the in-flight
+  activation that is *driving the switch* — activation dies half-done (units
+  stopped, profile bumped to the new gen, but `/run/current-system` never updated,
+  helper left dead). `KillMode=process` does **not** prevent this in practice.
+  This is the v2→v3 bootstrap hazard, now confirmed reproducible on every
+  helper-changing switch. Fix: helper launches the rebuild in a transient unit/
+  scope owned by PID 1 (`systemd-run --collect --unit nixadmin-rebuild-<id> …`,
+  service-type=oneshot), streaming via `journalctl -fu` that unit and reading exit
+  via `systemctl show -p ExecMainStatus`. Then a helper restart mid-switch can't
+  kill the rebuild. Until then, helper-changing deploys MUST go via a direct
+  `sudo nixos-rebuild` (not the helper socket). Workaround command:
+  `sudo /run/current-system/sw/bin/nixos-rebuild switch --flake 'path:<flakedir>#<host>'`.
 - [x] **Gate on the real exit code, not a string match.** *(done 2026-06-17)*
   `_run_helper` now returns `(output, exit_code)`; `rebuild` does
   `state.record_test(code == 0)`; `_looks_successful` removed. Also fixed a latent
