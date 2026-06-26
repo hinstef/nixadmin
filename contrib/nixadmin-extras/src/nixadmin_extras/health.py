@@ -31,6 +31,43 @@ echo "# Declared cosmic-session components:"
 systemctl --user list-dependencies cosmic-session.target --no-pager 2>/dev/null | head -30
 """
 
+# Failed units WITH the reason each failed. Just listing names ("nixos-upgrade
+# failed") gives the model the symptom but no cause, so it can only parrot it.
+# This discovers the failed units at runtime (system + user) and pulls the tail of
+# each one's journal — the error lines if any match, else a plain tail as fallback.
+# Still derive-don't-hardcode: no baked-in unit names or expected states; it reads
+# whatever is actually failing and supplies the live log so the model can diagnose.
+_FAILED_UNITS = r"""
+p='error|fail|cannot|expect|reason|refus|timeout|denied'
+sys=$(systemctl --failed --plain --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+usr=$(systemctl --user --failed --plain --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+if [ -z "$sys$usr" ]; then echo "No failed units (system or user)."; fi
+for u in $sys; do
+  echo "### FAILED (system): $u"
+  d=$(journalctl -u "$u" -b --no-pager -n 30 -o cat 2>/dev/null | grep -iE "$p" | tail -10)
+  [ -z "$d" ] && d=$(journalctl -u "$u" -b --no-pager -n 12 -o cat 2>/dev/null)
+  echo "${d:-(no log access)}"
+  echo
+done
+for u in $usr; do
+  echo "### FAILED (user): $u"
+  d=$(journalctl --user -u "$u" -b --no-pager -n 30 -o cat 2>/dev/null | grep -iE "$p" | tail -10)
+  [ -z "$d" ] && d=$(journalctl --user -u "$u" -b --no-pager -n 12 -o cat 2>/dev/null)
+  echo "$d"
+  echo
+done
+"""
+
+# Error-level logs this boot, both scopes. The previous version was --user only,
+# so it missed every system-service failure (e.g. nixos-upgrade.service).
+_RECENT_ERRORS = r"""
+echo "# System error-level logs this boot:"
+journalctl -p 3 -b --no-pager -o cat 2>/dev/null | tail -15 || echo "(no access)"
+echo
+echo "# User error-level logs this boot:"
+journalctl --user -p 3 -b --no-pager -o cat 2>/dev/null | tail -15
+"""
+
 # Derived heuristic (not hardcoded knowledge): booted != current means a rebuild
 # happened this boot — the precondition for GL clients failing to init EGL until
 # relogin (the panel incident's root cause).
@@ -61,15 +98,15 @@ manifest = Module(
         ),
         Fetcher(
             name="failed_units",
-            cmd="systemctl --failed --no-pager; echo '--- user ---'; "
-                "systemctl --user --failed --no-pager",
-            description="Failed systemd services (system and user)",
+            cmd=_FAILED_UNITS,
+            description="Failed systemd services (system and user), each with the "
+                        "tail of its journal explaining why it failed",
             expose_as_tool=True,
         ),
         Fetcher(
             name="recent_errors",
-            cmd="journalctl --user -p 3 -b --no-pager 2>/dev/null | tail -20",
-            description="Recent error-level log messages this boot",
+            cmd=_RECENT_ERRORS,
+            description="Recent error-level log messages this boot (system and user)",
             expose_as_tool=True,
         ),
         Fetcher(
