@@ -119,9 +119,34 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   MonitorRunner, emitting `Event`s. No buffer/store — journald is the ring.
   2b (deferred) = desktop notifications + model-phrased diagnosis + offered fix.
   2c (deferred) = error-rate spike, OOM, baseline persistence.
-- On-demand diagnosis (#1) — DONE via the `health` module (live journald queries).
+- On-demand diagnosis (#1) — **DONE + validated live (2026-06-26).** "Are there any
+  errors?" now names the unit, quotes the real cause, and suggests a fix. Three
+  fixes earned from live testing: adaptive answer prompt (status=1 sentence,
+  problem=what/why/fix); failed-units-with-reason moved to builtin `services`
+  (where errors classify) as shared `FAILED_UNITS_CMD`; removed a hardcoded
+  keyword grep that was deleting the real error line. Two-channel output: full
+  grounding + model answer logged to journald (`event=grounding`/`local answer`,
+  query_id-correlated); user sees only the concise answer.
+- **Remediation / "offer & act" (#3 — NEXT)**: turn diagnosis into a safe action.
+  Model classifies failure class, deterministic code acts, confirm + verify.
+  First slice: restart a failed *user* unit end-to-end (offer→`systemctl --user
+  restart`→verify `is-active`→report). Then session relogin (rebuild_skew/EGL),
+  reboot, and "restart won't help" (loop/build-failure) cases. See chat design.
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
+
+### Diagnosis findings to fix (from live testing 2026-06-26)
+- [ ] **Cold-start false all-clear (SAFETY, Tier 1-ish).** First query after a
+  daemon restart classified to `[]` (model cold → 2s classify timeout), so with
+  zero grounding the model asserted "everything is fine" — a false all-clear,
+  the dangerous direction. Fix options: retry classify once the model is warm;
+  or never let the model assert "fine" with empty grounding for a status/error
+  question (return "I couldn't check just now" instead). The grounding guard
+  already exists for the *matched-but-empty* case; this is the *nothing-matched*
+  case.
+- [ ] **Prefetch echoes the whole multiline command** into the model context (the
+  entire shell script appeared in the grounding). Noise/dilution for the 3b
+  model. Label the fetcher by name, or don't echo multiline `cmd`s.
 
 ### Quality & robustness backlog (2026-06-17 review)
 
