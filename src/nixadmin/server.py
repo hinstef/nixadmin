@@ -186,6 +186,14 @@ class Daemon:
             cast(Chain, query.chain) if query.chain in ("local", "remote") else None
         )
 
+        # Remediation (a safe runtime fix like "restart the backup service") is
+        # deterministic — handled before classify so it never pays the model-warm
+        # cost. Confirmed + verified; independent of read/mutation routing.
+        rem = remediation.parse(query.text)
+        if rem is not None:
+            await self._run_remediation(conn, query, rem)
+            return
+
         # Classify against the local model (skipped on a remote-only machine).
         # If the model is cold (unloaded when idle), tell the user we're loading
         # and give classify a generous timeout — the request itself triggers the
@@ -202,13 +210,6 @@ class Daemon:
                 query.text, self.modules, model=self.cfg.local_model,
                 url=self.cfg.local_url, timeout_s=ct,
             )
-
-        # Remediation (a safe runtime fix like "restart the backup service"):
-        # deterministic, confirmed, verified — independent of read/mutation routing.
-        rem = remediation.parse(query.text)
-        if rem is not None:
-            await self._run_remediation(conn, query, rem)
-            return
 
         mutation = detect_mutation(query.text)
         desired, pinned = resolve_desired_chain(
