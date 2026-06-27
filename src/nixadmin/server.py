@@ -186,12 +186,21 @@ class Daemon:
             cast(Chain, query.chain) if query.chain in ("local", "remote") else None
         )
 
-        # classify only when a local chain exists and is ready (cold-start guarded
-        # inside classify). On a remote-only machine this is skipped entirely.
+        # Classify against the local model (skipped on a remote-only machine).
+        # If the model is cold (unloaded when idle), tell the user we're loading
+        # and give classify a generous timeout — the request itself triggers the
+        # on-demand load (~6s). Never skip classify on a cold model: answering with
+        # no grounding produces a false "all clear".
         matched: list[Module] = []
-        if self.cfg.has_local and self.local_ready:
+        if self.cfg.has_local:
+            warming = not self.local_ready
+            if warming:
+                await conn.send(wire.Status(
+                    id=query.id, text="Warming up the local assistant… one moment."))
+            ct = local_llm.COLD_CLASSIFY_TIMEOUT if warming else local_llm.CLASSIFY_TIMEOUT
             matched = await local_llm.classify(
-                query.text, self.modules, model=self.cfg.local_model, url=self.cfg.local_url
+                query.text, self.modules, model=self.cfg.local_model,
+                url=self.cfg.local_url, timeout_s=ct,
             )
 
         mutation = detect_mutation(query.text)

@@ -23,7 +23,8 @@ from nixadmin.sdk import Module
 
 log = get_logger(__name__)
 
-CLASSIFY_TIMEOUT = 2.0  # cold-start guard (seconds)
+CLASSIFY_TIMEOUT = 2.0  # warm classify is sub-second; short guard when loaded
+COLD_CLASSIFY_TIMEOUT = 60.0  # cold: the request itself loads the model (~6s+)
 
 LOCAL_SYSTEM_PROMPT = (
     "You are a sysadmin assistant for a non-technical user. Use ONLY the inline "
@@ -80,16 +81,20 @@ async def is_ready(url: str, model: str) -> bool:
         return False
 
 
-async def classify(query: str, modules: list[Module], *, model: str, url: str) -> list[Module]:
+async def classify(
+    query: str, modules: list[Module], *, model: str, url: str,
+    timeout_s: float = CLASSIFY_TIMEOUT,
+) -> list[Module]:
     """Match the query to modules. Returns ``[]`` on timeout or error (caller
-    treats that as 'no privacy auto-detection this once')."""
+    treats that as 'no grounding this once'). Pass a generous ``timeout_s`` when the
+    model is cold — the classify request itself triggers the on-demand load."""
     prompt = build_classify_prompt(query, modules)
     body = {
         "model": model, "prompt": prompt, "stream": False,
         "options": {"num_predict": 20, "temperature": 0},
     }
     try:
-        async with httpx.AsyncClient(timeout=CLASSIFY_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
             r = await client.post(f"{url}/api/generate", json=body)
             r.raise_for_status()
             return parse_classify_response(r.json().get("response", ""), modules)
