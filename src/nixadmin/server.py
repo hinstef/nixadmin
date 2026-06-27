@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
-from nixadmin import actions
+from nixadmin import actions, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -203,6 +203,13 @@ class Daemon:
                 url=self.cfg.local_url, timeout_s=ct,
             )
 
+        # Remediation (a safe runtime fix like "restart the backup service"):
+        # deterministic, confirmed, verified — independent of read/mutation routing.
+        rem = remediation.parse(query.text)
+        if rem is not None:
+            await self._run_remediation(conn, query, rem)
+            return
+
         mutation = detect_mutation(query.text)
         desired, pinned = resolve_desired_chain(
             explicit=explicit, matched=matched, default_chain=self.cfg.default_chain
@@ -263,6 +270,18 @@ class Daemon:
             switch=self.safety.apply_switch,
             rollback=self.safety.apply_revert,
             suggest=self._suggest_package,
+        )
+        await conn.send(wire.Delta(id=query.id, text=result))
+        await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
+
+    async def _run_remediation(
+        self, conn: ClientConn, query: wire.Query, rem: remediation.Remediation
+    ) -> None:
+        """Safe runtime fix (e.g. restart a failed unit) — confirmed and verified."""
+        result = await remediation.run(
+            rem,
+            confirm=lambda text: conn.confirm(query.id, text),
+            status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
         )
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
