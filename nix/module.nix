@@ -63,7 +63,7 @@ let
       --env=OLLAMA_VULKAN=1 \
       --env=OLLAMA_IGPU_ENABLE=1 \
       --env=OLLAMA_LOAD_TIMEOUT=20m \
-      --env=OLLAMA_KEEP_ALIVE=24h \
+      --env=OLLAMA_KEEP_ALIVE=${cfg.local.keepAlive} \
       --env=VK_ICD_FILENAMES=${cfg.ollama.vulkanIcd} \
       --volume=/run/opengl-driver:/run/opengl-driver:ro \
       --volume=/nix/store:/nix/store:ro \
@@ -73,13 +73,6 @@ let
       --network=host \
       --security-opt=no-new-privileges \
       nixadmin-ollama:latest
-  '';
-
-  ollamaPreload = pkgs.writeShellScript "nixadmin-ollama-preload" ''
-    until ${pkgs.curl}/bin/curl -sf http://127.0.0.1:11434/ > /dev/null 2>&1; do sleep 2; done
-    ${pkgs.curl}/bin/curl -sf -X POST http://127.0.0.1:11434/api/generate \
-      --max-time 1200 -d '{"model":"${cfg.local.model}","prompt":"","keep_alive":-1}' \
-      > /dev/null 2>&1
   '';
 
   # Env passed to the daemon (a user service) — mirrors Config.from_env().
@@ -136,6 +129,20 @@ in
       type = lib.types.str;
       default = "http://localhost:11434";
       description = "Base URL of the local Ollama server.";
+    };
+
+    local.keepAlive = lib.mkOption {
+      type = lib.types.str;
+      default = "10m";
+      example = "30m";
+      description = ''
+        How long Ollama keeps the model resident after a request
+        (OLLAMA_KEEP_ALIVE). The model loads on demand and unloads after this idle
+        window, so an idle machine reclaims the RAM/VRAM. The daemon shows a
+        "warming up" status and classifies through the cold load (~6s), so a cold
+        first query is slow-but-correct rather than a false "all clear". Use "-1"
+        to pin it resident (not recommended on a laptop).
+      '';
     };
 
     remote.model = lib.mkOption {
@@ -253,19 +260,8 @@ in
       };
     };
 
-    # Preload the model into GPU memory once Ollama is up (own unit so it isn't
-    # killed when the start script execs).
-    systemd.user.services.nixadmin-ollama-preload = lib.mkIf ollamaEnabled {
-      description = "Pre-load nixadmin local model into GPU memory";
-      after = [ "nixadmin-ollama.service" ];
-      requires = [ "nixadmin-ollama.service" ];
-      wantedBy = [ "nixadmin-ollama.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
-        ExecStart = "${ollamaPreload}";
-      };
-    };
+    # No boot preload: the model loads on demand (first query) and unloads after
+    # local.keepAlive idle, so an idle machine keeps its RAM/VRAM. The daemon shows
+    # a "warming up" status and classifies through the cold load.
   };
 }
