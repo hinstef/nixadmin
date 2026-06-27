@@ -127,11 +127,19 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   keyword grep that was deleting the real error line. Two-channel output: full
   grounding + model answer logged to journald (`event=grounding`/`local answer`,
   query_id-correlated); user sees only the concise answer.
-- **Remediation / "offer & act" (#3 — NEXT)**: turn diagnosis into a safe action.
-  Model classifies failure class, deterministic code acts, confirm + verify.
-  First slice: restart a failed *user* unit end-to-end (offer→`systemctl --user
-  restart`→verify `is-active`→report). Then session relogin (rebuild_skew/EGL),
-  reboot, and "restart won't help" (loop/build-failure) cases. See chat design.
+- **Remediation / "offer & act" (#3) — slice 1 DONE + validated live (2026-06-27).**
+  New `remediation.py` tier (runtime fixes, distinct from `actions.py` config
+  writes). Restart a failed *user* unit end-to-end: parse "restart/relaunch/reload
+  X" (skips how-to questions) → resolve to a real unit by name/description match
+  against live state (prefers failed) → confirm → `systemctl --user restart` →
+  **verify** with `is-failed` → report the real result. Verified both branches:
+  "healthy again" on success, and honestly "still failing — needs a real fix"
+  with the journal tail when restart doesn't help (the disk-quota case). Handled
+  before classify so it pays no model-warm cost. Audited to journald.
+  - **NEXT slices:** system units (via the root helper, needs privilege); session
+    relogin / reboot (the rebuild_skew/EGL case); restart-loop detection (don't
+    offer a restart that systemd already tried N times); the offer-after-diagnosis
+    conversational path ("…want me to restart it?" → "yes").
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
 
