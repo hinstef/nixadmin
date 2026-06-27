@@ -136,14 +136,15 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
 
 ### Diagnosis findings to fix (from live testing 2026-06-26)
-- [ ] **Cold-start false all-clear (SAFETY, Tier 1-ish).** First query after a
-  daemon restart classified to `[]` (model cold → 2s classify timeout), so with
-  zero grounding the model asserted "everything is fine" — a false all-clear,
-  the dangerous direction. Fix options: retry classify once the model is warm;
-  or never let the model assert "fine" with empty grounding for a status/error
-  question (return "I couldn't check just now" instead). The grounding guard
-  already exists for the *matched-but-empty* case; this is the *nothing-matched*
-  case.
+- [x] **Cold-start false all-clear (SAFETY).** *(done 2026-06-27)* The model's
+  cold load is ~6s but classify's timeout was 2s → on a cold model classify timed
+  out → `[]` → false "everything is fine" from zero grounding. Fix: classify takes
+  `timeout_s`; daemon passes `COLD_CLASSIFY_TIMEOUT` (60s) when the model isn't
+  loaded so the classify request itself drives the on-demand load, and emits
+  `Status("Warming up…")` so any frontend shows a loading state. Paired with lazy
+  model loading: `services.nixadmin.local.keepAlive` (default 10m) + boot preload
+  removed, so the model unloads when idle (reclaims ~2GB) and the cold first query
+  is slow-but-correct (~9.5s, with the warming note). Verified live.
 - [ ] **Prefetch echoes the whole multiline command** into the model context (the
   entire shell script appeared in the grounding). Noise/dilution for the 3b
   model. Label the fetcher by name, or don't echo multiline `cmd`s.
