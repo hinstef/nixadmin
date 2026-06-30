@@ -173,22 +173,22 @@ lie or race*. File:line refs so this is cold-resumable.
   let `bd` own the granular task state.
 
 **Tier 1 — safety invariants (correctness bugs, do first):**
-- [ ] **Run `nixos-rebuild` in a detached cgroup, not the helper's.** *(NEW —
-  reproduced live 2026-06-26, HIGH priority)* The helper spawns `nixos-rebuild` as
-  a child of `nixadmin-helper.service`. When the new config's
-  `switch-to-configuration` restarts the helper unit (i.e. **any deploy that
-  changes the helper itself**), stopping that unit tears down the in-flight
-  activation that is *driving the switch* — activation dies half-done (units
-  stopped, profile bumped to the new gen, but `/run/current-system` never updated,
-  helper left dead). `KillMode=process` does **not** prevent this in practice.
-  This is the v2→v3 bootstrap hazard, now confirmed reproducible on every
-  helper-changing switch. Fix: helper launches the rebuild in a transient unit/
-  scope owned by PID 1 (`systemd-run --collect --unit nixadmin-rebuild-<id> …`,
-  service-type=oneshot), streaming via `journalctl -fu` that unit and reading exit
-  via `systemctl show -p ExecMainStatus`. Then a helper restart mid-switch can't
-  kill the rebuild. Until then, helper-changing deploys MUST go via a direct
-  `sudo nixos-rebuild` (not the helper socket). Workaround command:
-  `sudo /run/current-system/sw/bin/nixos-rebuild switch --flake 'path:<flakedir>#<host>'`.
+- [x] **Run `nixos-rebuild` in a detached cgroup, not the helper's.** *(done +
+  validated live 2026-06-29)* The helper now launches the rebuild via `systemd-run`
+  as a detached transient unit (`nixadmin-rebuild-<ts>-<pid>.service`,
+  service-type=oneshot, RemainAfterExit) owned by PID 1 — not in
+  `nixadmin-helper.service`'s cgroup. So when a helper-changing switch restarts the
+  helper mid-activation, the rebuild runs to completion independently; only the
+  live stream is lost. Streams via `journalctl --unit=… -f`, reads the real exit
+  via `systemctl show -p ExecMainStatus`, cleans the unit up after; `_cleanup_stale`
+  reaps finished leftovers at startup (running ones untouched). **Proof:** two
+  helper-changing switches driven entirely through the socket both completed
+  (`/run/current-system` advanced, collateral units healthy) where the old design
+  died half-done; the first run's leftover unit was reaped by the second.
+  Bootstrap note: installing the fix itself was a helper-changing switch, so it was
+  applied once via direct `sudo nixos-rebuild`; everything after goes via the
+  socket. Known wart: exactly one inert `active exited` rebuild unit lingers after
+  each helper-changing socket deploy (reaped next deploy; gone on reboot).
 - [x] **Gate on the real exit code, not a string match.** *(done 2026-06-17)*
   `_run_helper` now returns `(output, exit_code)`; `rebuild` does
   `state.record_test(code == 0)`; `_looks_successful` removed. Also fixed a latent
