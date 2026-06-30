@@ -31,6 +31,7 @@ import time
 
 SOCKET_PATH = "/run/nixadmin-helper.sock"
 ALLOWED_ACTIONS = {"test", "switch", "revert", "boot"}
+# (detached-rebuild self-test: forces a helper restart mid-switch — see commit)
 
 SBIN = "/run/current-system/sw/bin"
 NIXOS_REBUILD = f"{SBIN}/nixos-rebuild"
