@@ -10,9 +10,10 @@ Ambient system intelligence for NixOS — a daemon that knows your machine's sta
 explains it in plain language, and (with consent) fixes it. Not a chatbot: a
 personal observability layer with a conversational interface on top.
 
-> **Status:** v3 rewrite in progress on `feat/v3-daemon`. Greenfield from
-> [`docs/nixadmin-v3-spec.md`](docs/nixadmin-v3-spec.md) — the spec is the source
-> of truth; this README is a map.
+> **Status:** working on `feat/v3-daemon` — runs on the local chain alone
+> (explain state · install/remove apps · restart failed units). The remote
+> tool-calling chain is optional. Spec:
+> [`docs/nixadmin-v3-spec.md`](docs/nixadmin-v3-spec.md).
 
 ## How it works
 
@@ -24,6 +25,8 @@ clients (terminal · GTK · web)
         ├── modules        capability bundles, discovered via entry points (sdk.py)
         ├── local chain    cheap on-device model: classify → prefetch → summarize
         ├── remote chain   capable model via LiteLLM: full tool-calling agent
+        ├── actions        deterministic writes: install/remove apps, worktree-validated
+        ├── remediation    safe runtime fixes: restart a failed unit (confirm + verify)
         ├── router         two-stage; never silently changes where a query runs
         ├── safety gate    privileged actions gated in code, not in prompts
         └── monitors       D-Bus + poll watches → proactive events
@@ -62,13 +65,9 @@ docker = "nixadmin_docker:manifest"
 ## Development
 
 ```bash
-# run the smoke tests
-nix shell --impure --expr 'let p = import <nixpkgs> {}; in
-  p.python313.withPackages (ps: [ ps.pytest ps.pytest-asyncio ps.structlog ])' \
-  --command python -m pytest -q
+nix flake check     # pytest + mypy --strict + ruff + NixOS module eval — one gate
+nix develop         # dev shell: pytest -q · ruff check . · mypy src/nixadmin
 ```
-
-A proper dev shell and the NixOS module land with the daemon itself.
 
 ## License
 
