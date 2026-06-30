@@ -117,6 +117,8 @@ class MonitorRunner:
 
 
 def _run(cmd: str) -> str:
+    # shell=True is safe: `cmd` is a static, module-authored monitor command
+    # (trusted code — ADR 0001); no user input is interpolated into it.
     try:
         return subprocess.check_output(
             cmd, shell=True, stderr=subprocess.STDOUT, timeout=10, text=True

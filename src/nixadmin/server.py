@@ -358,12 +358,14 @@ class Daemon:
                 await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
                 return
 
-        # Verbose record → journald. The user sees only the concise answer below; the
-        # full grounding + model I/O stay queryable so we can always answer "why did
-        # it say that?" without re-running. Dev-phase verbosity at info; lower to
-        # debug once the diagnosis output is dialed in.
-        log.info("grounding", modules=[m.name for m in matched], chars=len(context),
-                 context=context)
+        # Verbose record → journald, at DEBUG so it is OFF by default: the grounding
+        # and the model's answer can contain sensitive system state (a failed unit's
+        # log may include tokens/paths) and the conversation itself, which we must
+        # not persist to the journal in normal operation. Enable via log_level=DEBUG
+        # to answer "why did it say that?" without re-running. At INFO we log only
+        # the shape, not the content.
+        log.info("grounding", modules=[m.name for m in matched], chars=len(context))
+        log.debug("grounding detail", context=context)
 
         message = local_llm.augment(query.text, context)
         answer = ""
@@ -373,7 +375,7 @@ class Daemon:
             answer += delta
             await conn.send(wire.Delta(id=query.id, text=delta))
 
-        log.info("local answer", answer=answer)
+        log.debug("local answer", answer=answer)
 
         await self.history.append(query.session, "user", query.text)
         await self.history.append(query.session, "assistant", answer)

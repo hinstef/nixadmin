@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from nixadmin.log import get_logger
+from nixadmin.util import run as _run
 
 log = get_logger(__name__)
 
@@ -145,11 +146,3 @@ async def _unit_tail(unit: str) -> str:
         "journalctl", "--user", "-u", unit, "-b", "--no-pager", "-n", "12", "-o", "cat"
     )
     return out.strip()
-
-
-async def _run(*cmd: str) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
-    out, _ = await proc.communicate()
-    return proc.returncode or 0, out.decode(errors="replace")

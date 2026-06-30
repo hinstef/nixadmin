@@ -43,6 +43,10 @@ async def _run(fetcher: Fetcher) -> str:
 
 
 def _run_blocking(cmd: str, timeout: int) -> str:
+    # shell=True is deliberate and safe here: `cmd` is a static, module-authored
+    # fetcher command (trusted single-author code — ADR 0001). The user's query is
+    # NEVER interpolated into it, so there is no injection surface; shell features
+    # (pipes, redirection) are what fetchers rely on.
     try:
         out = subprocess.check_output(
             cmd, shell=True, stderr=subprocess.STDOUT, timeout=timeout, text=True

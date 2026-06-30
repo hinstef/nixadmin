@@ -32,6 +32,7 @@ from pathlib import Path
 
 from nixadmin.errors import NixadminError
 from nixadmin.log import get_logger
+from nixadmin.util import run as _run
 
 log = get_logger(__name__)
 
@@ -293,11 +294,3 @@ async def _git(repo: str, *args: str) -> str:
     if rc != 0:
         raise NixadminError(f"git {' '.join(args)} failed: {out.strip()}")
     return out
-
-
-async def _run(*cmd: str) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
-    out, _ = await proc.communicate()
-    return proc.returncode or 0, out.decode(errors="replace")
