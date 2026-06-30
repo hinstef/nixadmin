@@ -234,8 +234,14 @@ lie or race*. File:line refs so this is cold-resumable.
 - [ ] **Property tests for `edit_packages`** (hypothesis): `add` idempotent;
   `add`+`remove` round-trips to original; `remove` of absent always raises;
   list delimiters survive. It's the one fn that rewrites the user's config.
-- [ ] **Helper `revert → switch --rollback` mapping** (`nixadmin-helper.py:52-53`)
-  untested + lives outside the package. Add a unit even as a script.
+- [x] **Helper pure logic now unit-tested.** *(done 2026-06-29)* Extracted the
+  helper's decision logic into pure functions (`build_cmd` incl. revert→switch
+  --rollback, `unit_is_finished`, `exit_code_from`, `is_reapable`, `_send`) and
+  made the module import-clean (no env read at load). `tests/test_helper_smoke.py`
+  loads it by path and covers them (22 cases) — notably `is_reapable` never
+  reaping a *running* rebuild, and `exit_code_from` never reporting a failed unit
+  as success. Detached systemd-run / restart-survival stay integration-validated
+  live. Behavior-preserving refactor; deploy whenever (tests pass without it).
 
 **Tier 3 — operational robustness:**
 - [ ] **Self-healing worktrees.** SIGKILL mid-`_validate_in_worktree` leaks a

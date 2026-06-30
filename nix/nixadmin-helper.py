@@ -54,10 +54,44 @@ _rebuild_lock = threading.Lock()
 # Backstop against a genuinely hung rebuild — generous, not a cap on slow builds.
 REBUILD_TIMEOUT_S = int(os.environ.get("NIXADMIN_REBUILD_TIMEOUT", "3600"))
 
-FLAKE_DIR = os.environ["NIXADMIN_FLAKE_DIR"]
-HOSTNAME   = os.environ["NIXADMIN_HOSTNAME"]
-
 DEVNULL = subprocess.DEVNULL
+
+
+# --- pure decision logic (unit-tested; see tests/test_helper_smoke.py) --------- #
+
+
+def build_cmd(action: str, flake_dir: str, hostname: str) -> list:
+    """nixos-rebuild argv for an action. 'revert' has no subcommand of its own — it
+    maps to 'switch --rollback'. The path: prefix bypasses nix's git-ownership check
+    on the user-owned flake."""
+    if action == "revert":
+        return [NIXOS_REBUILD, "switch", "--rollback"]
+    return [NIXOS_REBUILD, action, "--flake", f"path:{flake_dir}#{hostname}"]
+
+
+def unit_is_finished(active_state: str) -> bool:
+    """A oneshot+RemainAfterExit unit is done once it leaves 'activating':
+    success => 'active' (exited), failure => 'failed'."""
+    return active_state in ("active", "failed")
+
+
+def exit_code_from(active_state: str, exec_main_status: str) -> int:
+    """0 when the unit exited cleanly ('active'); otherwise its ExecMainStatus,
+    forced nonzero so a failed or killed unit never reports success."""
+    if active_state == "active":
+        return 0
+    try:
+        code = int(exec_main_status)
+    except (ValueError, TypeError):
+        code = 1
+    return code or 1
+
+
+def is_reapable(active_state: str) -> bool:
+    """True only for a FINISHED rebuild unit (safe to remove at startup). A running
+    rebuild ('activating'/'reloading') must be left alone — reaping it would kill a
+    live switch, the exact corruption this mechanism exists to prevent."""
+    return active_state in ("active", "failed", "inactive")
 
 
 def _send(f, obj) -> bool:
@@ -77,19 +111,11 @@ def _show(svc: str, prop: str) -> str:
 
 
 def _finished(svc: str) -> bool:
-    # oneshot + RemainAfterExit: running => "activating"; success => "active"
-    # (exited); failure => "failed". Done once it leaves the activating state.
-    return _show(svc, "ActiveState") in ("active", "failed")
+    return unit_is_finished(_show(svc, "ActiveState"))
 
 
 def _exit_code(svc: str) -> int:
-    if _show(svc, "ActiveState") == "active":
-        return 0  # exited cleanly
-    try:
-        code = int(_show(svc, "ExecMainStatus"))
-    except ValueError:
-        code = 1
-    return code or 1  # ensure nonzero on a failed/killed unit
+    return exit_code_from(_show(svc, "ActiveState"), _show(svc, "ExecMainStatus"))
 
 
 def _cleanup_unit(svc: str) -> None:
@@ -177,14 +203,8 @@ def handle_client(conn: socket.socket) -> None:
                 )
                 return
 
-            # Use path: prefix to bypass nix's git ownership check.
-            # Without it, nix (via libgit2) rejects repos owned by non-root users.
-            # "revert" maps to "switch --rollback" — there is no nixos-rebuild revert subcommand.
-            if action == "revert":
-                cmd = [NIXOS_REBUILD, "switch", "--rollback"]
-            else:
-                cmd = [NIXOS_REBUILD, action, "--flake", f"path:{FLAKE_DIR}#{HOSTNAME}"]
-            # "boot" stages the new generation for next reboot without activating it live
+            cmd = build_cmd(action, os.environ["NIXADMIN_FLAKE_DIR"],
+                            os.environ["NIXADMIN_HOSTNAME"])
 
             # Only one rebuild at a time. Tell the client if it has to wait.
             if not _rebuild_lock.acquire(blocking=False):
@@ -214,7 +234,7 @@ def _cleanup_stale() -> None:
     )
     for line in r.stdout.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[2] in ("active", "failed", "inactive"):
+        if len(parts) >= 3 and is_reapable(parts[2]):
             _cleanup_unit(parts[0])
 
 
