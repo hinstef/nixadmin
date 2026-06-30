@@ -108,6 +108,24 @@ A nerd sets this up *for someone they love*, so there is a second user — the
 in). The loved one's surface stays dead-simple. A novel product *shape*, not just
 a screen.
 
+## Implementation implications (tracked, not yet built)
+
+Two pieces fall directly out of "act, don't ask" — promote to beads issues when we
+start. Neither is being built yet.
+
+1. **Autofix engine (the 80%).** A systemd unit failure is *already* subscribed via
+   D-Bus (`monitors.py` → builtin `services` → `JobRemoved`/`failed`), but is only
+   **emitted as an event broadcast to connected clients** — with no client attached
+   it goes nowhere. We notice and do nothing. The work: apply the act/ask decision
+   matrix to those events — safe + reversible → auto-remediate (restart) with
+   undo-after; the rest → the one rare push. This connects the monitor layer to the
+   remediation tier we already have; the plumbing exists, the *policy* doesn't.
+2. **The 20% (liveness poll).** Non-unit process exits (the dock) emit no signal
+   anywhere — detectable only by polling liveness. Already specced as the
+   process-vanished detector in
+   [`proactive-detectors-plan.md`](proactive-detectors-plan.md) (#2a). Track,
+   don't tackle yet — deliberately decide which process classes earn a poll.
+
 ## Deferred (decide after the model)
 
 - **Toolkit:** libcosmic (iced) is native-correct for the locked COSMIC stack
