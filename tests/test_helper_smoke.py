@@ -87,6 +87,24 @@ def test_is_reapable_never_touches_running(state, reap):
     assert helper.is_reapable(state) is reap
 
 
+# --- restart-target validation (privileged; must reject junk + self) ------- #
+
+@pytest.mark.parametrize("unit,ok", [
+    ("bluetooth.service", True),
+    ("cups.socket", True),
+    ("systemd-timesyncd.service", True),
+    ("dev-disk-by\\x2duuid.mount", True),   # systemd-escaped names contain backslashes
+    ("nixadmin-helper.service", False),      # deny-list: never restart ourselves
+    ("", False),
+    ("bluetooth", False),                    # no unit suffix
+    ("evil.service; rm -rf /", False),       # junk / would-be injection
+    ("../../etc/passwd", False),
+    ("foo.exe", False),                      # unknown suffix
+])
+def test_valid_unit(unit, ok):
+    assert helper.valid_unit(unit) is ok
+
+
 # --- _send tolerates a dead client ----------------------------------------- #
 
 class _OkWriter:

@@ -2,10 +2,12 @@
 nixadmin-helper — privileged Unix-socket daemon for nixos-rebuild.
 
 Runs as root. Accepts JSON requests from the nixadmin group, executes
-nixos-rebuild, and streams stdout+stderr back line by line.
+nixos-rebuild (or a `systemctl restart <unit>`), and streams stdout+stderr back
+line by line.
 
 Protocol (newline-terminated JSON on both sides):
   Request:  {"action": "test"|"switch"|"boot"|"revert"}
+        or  {"action": "restart", "unit": "<name>.service"}  (the tray's "fix it")
   Response: zero or more {"stream": "<line>"}
   Finally:  {"exit": <returncode>}
 
@@ -23,6 +25,7 @@ systemctl.
 import grp
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -53,6 +56,16 @@ _rebuild_lock = threading.Lock()
 
 # Backstop against a genuinely hung rebuild — generous, not a cap on slow builds.
 REBUILD_TIMEOUT_S = int(os.environ.get("NIXADMIN_REBUILD_TIMEOUT", "3600"))
+
+# Restart action: a quick privileged `systemctl restart <unit>` for the tray's
+# "fix it". Not a rebuild — runs directly, not in a detached unit.
+RESTART_TIMEOUT_S = 90
+# Never restart ourselves: `systemctl restart nixadmin-helper` would kill this
+# process mid-restart (self-destruct). The daemon is a user unit, unreachable here.
+RESTART_DENY = {"nixadmin-helper.service"}
+# A well-formed systemd unit name: safe charset + a known suffix. No shell is used,
+# so this is belt-and-braces against a malformed/garbage target from a client.
+_UNIT_RE = re.compile(r"^[A-Za-z0-9@._:\\-]+\.(service|socket|timer|target|path|mount)$")
 
 DEVNULL = subprocess.DEVNULL
 
@@ -94,6 +107,12 @@ def is_reapable(active_state: str) -> bool:
     return active_state in ("active", "failed", "inactive")
 
 
+def valid_unit(unit: str) -> bool:
+    """True if `unit` is a well-formed systemd unit name we're allowed to restart —
+    rejects malformed/garbage names and the deny-list (never restart ourselves)."""
+    return bool(_UNIT_RE.match(unit)) and unit not in RESTART_DENY
+
+
 def _send(f, obj) -> bool:
     """Write one newline-JSON message. Returns False if the client is gone
     (broken pipe) so the caller can stop writing without aborting the rebuild."""
@@ -122,6 +141,27 @@ def _cleanup_unit(svc: str) -> None:
     # A RemainAfterExit unit lingers after exit so we can read its status; remove it.
     subprocess.run([SYSTEMCTL, "stop", svc], stdout=DEVNULL, stderr=DEVNULL)
     subprocess.run([SYSTEMCTL, "reset-failed", svc], stdout=DEVNULL, stderr=DEVNULL)
+
+
+def _run_restart(unit: str, f) -> None:
+    """Run `systemctl restart <unit>` directly (not a detached unit — it's quick and
+    doesn't restart this helper). Streams output and returns the real exit code; the
+    daemon verifies the unit's resulting state afterward."""
+    proc = subprocess.Popen(
+        [SYSTEMCTL, "restart", unit],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    watchdog = threading.Timer(RESTART_TIMEOUT_S, proc.kill)
+    watchdog.start()
+    try:
+        client_alive = True
+        for line in proc.stdout:
+            if client_alive and not _send(f, {"stream": line}):
+                client_alive = False
+        proc.wait()
+    finally:
+        watchdog.cancel()
+    _send(f, {"exit": proc.returncode})
 
 
 def _run_rebuild(cmd: list[str], f) -> None:
@@ -195,10 +235,23 @@ def handle_client(conn: socket.socket) -> None:
                 return
 
             action = req.get("action", "")
+
+            # Restart a system unit (the tray's "fix it") — a quick privileged op,
+            # separate from the rebuild path. Validate the unit name (belt-and-braces;
+            # no shell is used) and refuse the deny-list.
+            if action == "restart":
+                unit = req.get("unit", "")
+                if not valid_unit(unit):
+                    _send(f, {"error": f"invalid or disallowed unit: {unit!r}"})
+                    return
+                _run_restart(unit, f)
+                return
+
             if action not in ALLOWED_ACTIONS:
                 f.write(
                     json.dumps({
-                        "error": f"unknown action '{action}'; allowed: {sorted(ALLOWED_ACTIONS)}"
+                        "error": f"unknown action '{action}'; allowed: "
+                                 f"{sorted(ALLOWED_ACTIONS)} + restart"
                     }).encode() + b"\n"
                 )
                 return
