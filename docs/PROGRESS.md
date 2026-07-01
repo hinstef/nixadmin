@@ -164,13 +164,15 @@ config and runs `nixos-rebuild` as root, robustness = *the privilege path can't
 lie or race*. File:line refs so this is cold-resumable.
 
 **Tooling / process:**
-- [ ] **Adopt [beads](https://github.com/steveyegge/beads) (`bd`) for task tracking.**
-  This project is outgrowing a hand-maintained markdown checklist. Beads is a
-  git-backed issue tracker (issues as JSON/JSONL in-repo, dependency graph, CLI +
-  agent-friendly) — keeps tasks versioned alongside the code and survives across
-  sessions without a context dump. Migrate this backlog + the proactive-detectors
-  plan into `bd` issues with deps; keep PROGRESS.md as the narrative/north-star,
-  let `bd` own the granular task state.
+- [x] **Adopt [beads](https://github.com/steveyegge/beads) (`bd`) for task
+  tracking.** *(done 2026-06-30)* Initialized in this repo (`.beads/`, tracked via
+  `.beads/issues.jsonl`); `bd` installed via nixlap home packages. The open backlog
+  (autofix, remediation next-slices, proactive detectors, quality/robustness items,
+  UX/UI, the exit-None bug) migrated into 22 issues, grouped by label. **`bd` now
+  owns granular task state; this file stays the narrative/north-star.** `bd ready`
+  / `bd list`. bd's default CLAUDE.md/AGENTS.md were trimmed — its mandatory-push
+  and no-MEMORY.md directives were removed (pushes stay user-controlled; the
+  harness memory system stays in use).
 
 **Tier 1 — safety invariants (correctness bugs, do first):**
 - [x] **Run `nixos-rebuild` in a detached cgroup, not the helper's.** *(done +
