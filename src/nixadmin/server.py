@@ -283,6 +283,7 @@ class Daemon:
             rem,
             confirm=lambda text: conn.confirm(query.id, text),
             status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
+            restart_system=self.safety.apply_restart,
         )
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))

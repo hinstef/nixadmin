@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from nixadmin.remediation import match_unit, parse
+import nixadmin.remediation as remediation
+from nixadmin.remediation import Remediation, match_unit, parse
 
 # (unit, active_state, description) triples, as gathered from the live system.
 UNITS = [
@@ -55,3 +56,48 @@ def test_match_can_be_ambiguous():
     assert set(match_unit("nixadmin", UNITS)) == {
         "nixadmin-backup.service", "nixadmin-daemon.service"
     }
+
+
+# --- scope routing: system units go through the privileged helper ---------- #
+
+async def _yes(_):
+    return True
+
+
+async def _noop(_):
+    return None
+
+
+def _only_system_failing(monkeypatch, unit="cups.service"):
+    async def fake_list(scope):
+        return [(unit, "failed", "CUPS printing")] if scope == "system" else []
+    monkeypatch.setattr(remediation, "_list_units", fake_list)
+
+
+async def test_system_unit_routes_through_helper(monkeypatch):
+    _only_system_failing(monkeypatch)
+
+    async def healthy(_unit, _scope):  # is-failed after restart → not failed
+        return False
+    monkeypatch.setattr(remediation, "_is_failed", healthy)
+
+    called = {}
+
+    async def fake_restart_system(unit):
+        called["unit"] = unit
+        return "ok"
+
+    out = await remediation.run(
+        Remediation("restart_unit", "cups"),
+        confirm=_yes, status=_noop, restart_system=fake_restart_system,
+    )
+    assert called["unit"] == "cups.service"  # privileged path, not systemctl --user
+    assert "healthy again" in out
+
+
+async def test_system_unit_without_privileged_path_declines(monkeypatch):
+    _only_system_failing(monkeypatch)
+    out = await remediation.run(
+        Remediation("restart_unit", "cups"), confirm=_yes, status=_noop,
+    )
+    assert "system service" in out.lower()  # can't do it without the helper injected

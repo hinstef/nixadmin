@@ -7,8 +7,10 @@ only phrases things — the action set and execution are deterministic, every ac
 is confirmed, and the result is **verified** (we re-check the unit and report the
 real state, never a fake "Done!").
 
-First slice: restart a failed USER unit (no privilege). System units (via the root
-helper) and session relogin / reboot come later.
+Scope-aware: a failed **user** unit is restarted directly (`systemctl --user`, no
+privilege); a failed **system** unit is restarted through the root helper (injected
+as ``restart_system``) — the tray's "fix it" for the 80% (systemd unit failures).
+Session relogin / reboot come later.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from nixadmin.errors import NixadminError
 from nixadmin.log import get_logger
 from nixadmin.util import run as _run
 
@@ -25,6 +28,8 @@ log = get_logger(__name__)
 
 ConfirmFn = Callable[[str], Awaitable[bool]]
 StatusFn = Callable[[str], Awaitable[None]]
+# Privileged restart of a system unit (via the helper); raises on failure.
+RestartFn = Callable[[str], Awaitable[str]]
 
 # "restart the backup service", "relaunch nixadmin-backup", "reload X" — an
 # imperative naming a thing to restart. Skip how-to questions ("how do I restart…")
@@ -91,42 +96,68 @@ def _choose(matches: list[str], units: list[tuple[str, str, str]]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-async def run(rem: Remediation, *, confirm: ConfirmFn, status: StatusFn) -> str:
-    """Restart a matched user unit, confirm first, then verify and report."""
-    units = await _list_user_units()
-    cand = _choose(match_unit(rem.target, units), units)
+async def run(
+    rem: Remediation, *, confirm: ConfirmFn, status: StatusFn,
+    restart_system: RestartFn | None = None,
+) -> str:
+    """Restart a matched unit (system or user), confirm first, then verify + report.
 
+    System units go through ``restart_system`` (the privileged helper); user units
+    are restarted directly. ``restart_system`` is required to fix a system unit.
+    """
+    system = await _list_units("system")
+    user = await _list_units("user")
+    scope_of = {u: "user" for u, _a, _d in user}
+    scope_of.update({u: "system" for u, _a, _d in system})  # system wins on a name clash
+
+    cand = list(dict.fromkeys(_choose(match_unit(rem.target, system + user), system + user)))
     if not cand:
         return f"I couldn't find a service matching '{rem.target}'."
     if len(cand) > 1:
         return "Several services match that — which one? " + ", ".join(cand)
 
     unit = cand[0]
+    scope = scope_of.get(unit, "system")
     if not await confirm(f"Restart {unit}?"):
-        log.info("remediation", kind=rem.kind, unit=unit, outcome="cancelled")
+        log.info("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="cancelled")
         return "Cancelled — nothing changed."
 
     await status(f"Restarting {unit}…")
-    await _run("systemctl", "--user", "restart", unit)
-    await asyncio.sleep(1.0)  # let it settle before checking
+    try:
+        if scope == "system":
+            if restart_system is None:
+                return "I can't restart a system service in this context."
+            await restart_system(unit)  # via the root helper; raises on failure
+        else:
+            await _run("systemctl", "--user", "restart", unit)
+    except NixadminError as e:
+        log.warning("remediation", kind=rem.kind, unit=unit, scope=scope,
+                    outcome="failed", error=str(e))
+        return f"I couldn't restart {unit} ({e})."
 
-    if not await _is_failed(unit):
-        log.info("remediation", kind=rem.kind, unit=unit, outcome="restarted")
+    await asyncio.sleep(1.0)  # let it settle before checking
+    if not await _is_failed(unit, scope):
+        log.info("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="restarted")
         return f"Restarted {unit} — it's healthy again."
 
     # Restart didn't help — be honest and show the real reason rather than claim a fix.
-    reason = await _unit_tail(unit)
-    log.warning("remediation", kind=rem.kind, unit=unit, outcome="still_failing")
+    reason = await _unit_tail(unit, scope)
+    log.warning("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="still_failing")
     return (
         f"I restarted {unit}, but it's still failing — this needs a real fix, "
         f"not a restart:\n{reason}"
     )
 
 
-async def _list_user_units() -> list[tuple[str, str, str]]:
-    _rc, out = await _run(
-        "systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager"
-    )
+def _scoped(scope: str, *args: str) -> tuple[str, ...]:
+    """Prefix systemctl/journalctl args with --user for the user scope."""
+    head, tail = args[0], args[1:]
+    return (head, *(("--user",) if scope == "user" else ()), *tail)
+
+
+async def _list_units(scope: str) -> list[tuple[str, str, str]]:
+    _rc, out = await _run(*_scoped(
+        scope, "systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager"))
     units: list[tuple[str, str, str]] = []
     for line in out.splitlines():
         parts = line.split(None, 4)
@@ -136,13 +167,12 @@ async def _list_user_units() -> list[tuple[str, str, str]]:
     return units
 
 
-async def _is_failed(unit: str) -> bool:
-    _rc, out = await _run("systemctl", "--user", "is-failed", unit)
+async def _is_failed(unit: str, scope: str) -> bool:
+    _rc, out = await _run(*_scoped(scope, "systemctl", "is-failed", unit))
     return out.strip() == "failed"
 
 
-async def _unit_tail(unit: str) -> str:
-    _rc, out = await _run(
-        "journalctl", "--user", "-u", unit, "-b", "--no-pager", "-n", "12", "-o", "cat"
-    )
+async def _unit_tail(unit: str, scope: str) -> str:
+    _rc, out = await _run(*_scoped(
+        scope, "journalctl", "-u", unit, "-b", "--no-pager", "-n", "12", "-o", "cat"))
     return out.strip()

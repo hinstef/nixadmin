@@ -121,6 +121,19 @@ async def test_apply_switch_returns_output_on_success(sock):
     assert "activated" in out
 
 
+async def test_apply_restart_sends_action_and_unit(sock):
+    async with FakeHelper(sock, output="", exit_code=0) as h:
+        out = await SafetyGate(sock).apply_restart("bluetooth.service")
+    assert h.requests[0] == {"action": "restart", "unit": "bluetooth.service"}
+    assert out  # non-empty result on success
+
+
+async def test_apply_restart_raises_on_failure(sock):
+    async with FakeHelper(sock, output="nope", exit_code=1):
+        with pytest.raises(SafetyError, match="restart"):
+            await SafetyGate(sock).apply_restart("bluetooth.service")
+
+
 async def test_context_cache_assembles_and_caches():
     calls = {"n": 0}
 

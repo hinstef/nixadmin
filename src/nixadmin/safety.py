@@ -52,7 +52,7 @@ class SafetyGate:
                 return "Cancelled — no changes were made."
 
         log.info("rebuild dispatch", action=action)
-        output, code = await self._run_helper(action)
+        output, code = await self._run_helper({"action": action})
 
         # The test→switch invariant gates on the helper's real exit code, never on
         # whether the word "failed" happens to appear in the build output.
@@ -69,7 +69,7 @@ class SafetyGate:
 
         Raises :class:`SafetyError` on a nonzero rebuild, so the action tier can
         revert its config edit."""
-        output, code = await self._run_helper("switch")
+        output, code = await self._run_helper({"action": "switch"})
         if code != 0:
             raise SafetyError(f"rebuild failed (exit {code}):\n{output}".strip())
         return output or "(done)"
@@ -78,20 +78,28 @@ class SafetyGate:
         """Roll the system back to the previous generation (`switch --rollback`),
         for the action tier's recovery when a switch fails mid-activation. Raises
         :class:`SafetyError` if the rollback itself fails."""
-        output, code = await self._run_helper("revert")
+        output, code = await self._run_helper({"action": "revert"})
         if code != 0:
             raise SafetyError(f"rollback failed (exit {code}):\n{output}".strip())
         return output or "(done)"
 
-    async def _run_helper(self, action: str) -> tuple[str, int]:
-        """Send the action to the root helper, collect its streamed output, and
+    async def apply_restart(self, unit: str) -> str:
+        """Restart a *system* unit via the root helper (the tray's "fix it"). Raises
+        :class:`SafetyError` on failure so the remediation tier reports honestly."""
+        output, code = await self._run_helper({"action": "restart", "unit": unit})
+        if code != 0:
+            raise SafetyError(f"restart {unit} failed (exit {code}):\n{output}".strip())
+        return output or "(done)"
+
+    async def _run_helper(self, request: dict[str, str]) -> tuple[str, int]:
+        """Send a request to the root helper, collect its streamed output, and
         return ``(output, exit_code)``."""
         try:
             reader, writer = await asyncio.open_unix_connection(self._socket)
         except OSError as e:
             raise SafetyError(f"cannot reach privileged helper: {e}") from e
 
-        writer.write((json.dumps({"action": action}) + "\n").encode())
+        writer.write((json.dumps(request) + "\n").encode())
         await writer.drain()
         writer.write_eof()
 
