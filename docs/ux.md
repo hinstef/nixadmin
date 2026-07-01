@@ -55,6 +55,42 @@ is for the irreversible/consequential tail only.
 auto-act in a way that interrupts what the person is doing. A crashed dock is
 already broken; restarting only helps. A flaky-but-working service is not.
 
+## North star: context-aware, in-the-moment help
+
+Design-for-silence in its vivid form: the assistant notices a failure the person
+*just personally hit* and quietly offers to fix it, right then — then goes silent
+again. Canonical example — **printing** (the universally-hated "it never works"):
+they try to print, the CUPS job fails, and because they were *just in the print
+dialog*, the tray offers "Printing didn't go through — want me to look?".
+
+The mechanic is a **conjunction**, and it's what separates this from Clippy:
+
+- a **system failure** signal (e.g. a failed CUPS job) — alone this might be a
+  background job; don't surface.
+- an **in-the-moment intent** signal (print dialog open / that app just focused) —
+  alone this is just activity; nothing's wrong.
+- **failure ∧ intent** = the one legitimate moment to speak.
+
+> Clippy *had* context and used it to push unwanted help. The rule here:
+> **surface only on a failure the person just personally hit — never on a state
+> merely noticed.** Same knowledge, opposite timing.
+
+Context feeds the act/ask matrix as the *current-user-impact / confidence* input:
+someone actively trying to print clearly cares now — so auto-fix the safe/reversible
+cases silently, offer the rest, and if it's truly stuck, that offer becomes the
+escalation-to-the-specialist consent moment (which is also the loved one's natural
+"this seems off" ask, and the point where local → frontier is legitimate).
+
+**Hard privacy line — the whole brand in one mechanic.** Context-awareness is the
+same capability as Big Tech surveillance (knowing what you're doing), so it must be
+inverted: **local-only, ephemeral, never logged, never sent.** Read to help you in
+the moment, then forgotten. They watch to monetize; this watches to help and forget.
+
+Not a PoC target. The PoC is the 80% (systemd unit failures) with a hands-on
+"fix it" button — *supervised mode*, where you approve each fix and watch what the
+autonomous version would do before trusting it to act silently. This is where it's
+going.
+
 ## Silence accounted for — the "kept-well" ledger
 
 Silence must not curdle into **opacity**: a system you never see act is one you
