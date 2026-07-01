@@ -30,6 +30,12 @@ def test_roundtrip_every_message_type():
         p.Confirm(id="q1", text="Use remote instead?"),
         p.Input(id="q1", prompt="Package name:"),
         p.Event(source="monitor.x", severity="error", text="nginx down"),
+        p.ListFailures(id="q1"),
+        p.Failures(id="q1", units=[
+            {"unit": "cups.service", "scope": "system", "description": "CUPS printing"},
+            {"unit": "nixadmin-backup.service", "scope": "user", "description": "Nightly backup"},
+        ]),
+        p.Failures(id="q1", units=[]),  # no failures
     ]
     for msg in samples:
         line = p.encode(msg)

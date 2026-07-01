@@ -152,20 +152,38 @@ class Event:
     TYPE: ClassVar[str] = "event"
 
 
+@dataclass
+class ListFailures:
+    """Client → daemon: request the current failed units as structured data."""
+
+    id: str
+    TYPE: ClassVar[str] = "list_failures"
+
+
+@dataclass
+class Failures:
+    """Daemon → client: the current failed units. Each entry is
+    ``{"unit": …, "scope": "system"|"user", "description": …}``."""
+
+    id: str
+    units: list[dict[str, str]]
+    TYPE: ClassVar[str] = "failures"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
 
 Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
-    | Confirm | Input | Ready | Event
+    | Confirm | Input | Ready | Event | ListFailures | Failures
 )
 
 _REGISTRY: dict[str, type] = {
     cls.TYPE: cls
     for cls in (
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
-        Confirm, Input, Ready, Event,
+        Confirm, Input, Ready, Event, ListFailures, Failures,
     )
 }
 

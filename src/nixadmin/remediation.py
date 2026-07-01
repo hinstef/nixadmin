@@ -149,6 +149,17 @@ async def run(
     )
 
 
+async def failed_units() -> list[dict[str, str]]:
+    """Currently-failed service units across both scopes, as structured data for a
+    client (the tray) to render per-unit actions: ``{unit, scope, description}``."""
+    out: list[dict[str, str]] = []
+    for scope in ("system", "user"):
+        for unit, active, desc in await _list_units(scope):
+            if active == "failed":
+                out.append({"unit": unit, "scope": scope, "description": desc})
+    return out
+
+
 def _scoped(scope: str, *args: str) -> tuple[str, ...]:
     """Prefix systemctl/journalctl args with --user for the user scope."""
     head, tail = args[0], args[1:]

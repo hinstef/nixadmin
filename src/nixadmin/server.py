@@ -155,6 +155,13 @@ class Daemon:
                 pending.cancel()
         elif isinstance(msg, wire.Respond):
             conn.deliver_response(msg)
+        elif isinstance(msg, wire.ListFailures):
+            asyncio.create_task(self._list_failures(conn, msg))
+
+    async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
+        """Structured current failures for a client to render actions from."""
+        units = await remediation.failed_units()
+        await conn.send(wire.Failures(id=msg.id, units=units))
 
     def _chains(self) -> list[str]:
         chains = ["remote"] if self.cfg.remote_model else []
