@@ -111,14 +111,14 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   The "real harness" (fakes for Ollama/LiteLLM/D-Bus, dispatch-branch coverage)
   is the next testing investment.
 
-### Observability / proactive (next real work)
-- **Proactive detector (#2)** — TODO, **planned in detail**:
-  [`proactive-detectors-plan.md`](proactive-detectors-plan.md). Cold-resumable.
-  2a = two stateful core detectors in a new `detectors.py` (process-vanished via
-  dynamic baseline → catches the silent panel death; new-coredump) wired into
-  MonitorRunner, emitting `Event`s. No buffer/store — journald is the ring.
-  2b (deferred) = desktop notifications + model-phrased diagnosis + offered fix.
-  2c (deferred) = error-rate spike, OOM, baseline persistence.
+### Observability / proactive
+
+> **Open tasks live in beads** (`bd ready` / `bd list`). Below is the built +
+> validated record and the locked decisions; design detail is in the linked docs.
+
+- **Proactive detectors (#2)** — designed, not built:
+  [`proactive-detectors-plan.md`](proactive-detectors-plan.md). Tracked in beads
+  (labels `proactive`/`autofix`).
 - On-demand diagnosis (#1) — **DONE + validated live (2026-06-26).** "Are there any
   errors?" now names the unit, quotes the real cause, and suggests a fix. Three
   fixes earned from live testing: adaptive answer prompt (status=1 sentence,
@@ -136,10 +136,7 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   "healthy again" on success, and honestly "still failing — needs a real fix"
   with the journal tail when restart doesn't help (the disk-quota case). Handled
   before classify so it pays no model-warm cost. Audited to journald.
-  - **NEXT slices:** system units (via the root helper, needs privilege); session
-    relogin / reboot (the rebuild_skew/EGL case); restart-loop detection (don't
-    offer a restart that systemd already tried N times); the offer-after-diagnosis
-    conversational path ("…want me to restart it?" → "yes").
+  - Next slices tracked in beads (label `remediation`).
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
 
@@ -153,9 +150,7 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   model loading: `services.nixadmin.local.keepAlive` (default 10m) + boot preload
   removed, so the model unloads when idle (reclaims ~2GB) and the cold first query
   is slow-but-correct (~9.5s, with the warming note). Verified live.
-- [ ] **Prefetch echoes the whole multiline command** into the model context (the
-  entire shell script appeared in the grounding). Noise/dilution for the 3b
-  model. Label the fetcher by name, or don't echo multiline `cmd`s.
+  *(Remaining open finding — prefetch command-echo noise — tracked in beads.)*
 
 ### Quality & robustness backlog (2026-06-17 review)
 
@@ -233,9 +228,6 @@ lie or race*. File:line refs so this is cold-resumable.
   with Tier 1 #1)*: `FakeHelper` speaks the newline-JSON helper protocol; tests
   cover test→switch enablement, failed-test blocks switch, and `apply_switch`
   raise/return on the real `_run_helper` socket path.
-- [ ] **Property tests for `edit_packages`** (hypothesis): `add` idempotent;
-  `add`+`remove` round-trips to original; `remove` of absent always raises;
-  list delimiters survive. It's the one fn that rewrites the user's config.
 - [x] **Helper pure logic now unit-tested.** *(done 2026-06-29)* Extracted the
   helper's decision logic into pure functions (`build_cmd` incl. revert→switch
   --rollback, `unit_is_finished`, `exit_code_from`, `is_reapable`, `_send`) and
@@ -245,28 +237,10 @@ lie or race*. File:line refs so this is cold-resumable.
   as success. Detached systemd-run / restart-survival stay integration-validated
   live. Behavior-preserving refactor; deploy whenever (tests pass without it).
 
-**Tier 3 — operational robustness:**
-- [ ] **Self-healing worktrees.** SIGKILL mid-`_validate_in_worktree` leaks a
-  worktree + tmpdir and trips the next `worktree add`. Run `git worktree prune`
-  at daemon startup.
-- [ ] **Daemon supervision.** systemd `Restart=on-failure` + backoff, and
-  `WatchdogSec`/`sd_notify` so a *hung* daemon (wedged on a helper read) restarts.
-- [ ] **Version the client↔daemon wire** in the hello handshake (module ABI has
-  `spec_version`; the wire protocol does not) — stale client should fail loud.
-
-**Tier 4 — when there's slack:**
-- [ ] Helper read timeout in `_run_helper` (`safety.py:80`) so a stuck helper
-  doesn't hang the daemon forever.
-- [ ] Keep `litellm` pinned + lazy-imported so the local-only path never loads the
-  heavy/remote-surface dep.
-
-### Follow-ups (optional, not blocking — v3 fully works on the local chain)
-- Remote chain needs a Hermes proxy / API base (Claude subscription) before use.
-  `defaultChain="local"` so the system works without it today.
-- machine-profile ContextProvider (interface ready, none registered).
-- desktop-notification path when no client connected (events only broadcast now).
-- the real test harness described above.
-- CI: GitHub Actions running `nix flake check`.
+_Tier 2–4 open items (property tests, worktree prune, daemon supervision, wire
+versioning, helper read timeout, lazy litellm) and the earlier follow-ups (real
+test harness, machine-profile provider, CI, remote-chain enablement) are all
+tracked in beads — `bd list -l quality`._
 
 ## v1 build COMPLETE — earlier integration notes (now done)
 1. **Wire into nixlap** — add this flake as an input in `~/workspace/nixlap/flake.nix`,
@@ -279,12 +253,9 @@ lie or race*. File:line refs so this is cold-resumable.
 3. **Live smoke** — `nixadmin-daemon` by hand, then `nixadmin`, ask "is my wifi working?".
 4. **Real harness** (deferred per user): fakes for Ollama/LiteLLM/D-Bus, golden transcripts.
 
-### Known gaps / TODO-later (not blocking)
-- Remote readiness is optimistic (assumed ready if model configured); failures surface per-call.
-- `Ready` message wired but `hello.ready` only reflects local; remote always advertised ready.
-- Monitors' desktop-notification-when-no-clients path is not implemented (events only broadcast).
-- Context providers: no built-in machine-profile provider yet (interface ready, none registered).
-- History is NullHistory only; SessionState scratch works (test-before-switch enforced).
+_Earlier "known gaps" — remote readiness / `hello.ready` accuracy, the
+desktop-notification-when-no-client fallback, machine-profile provider, History
+backend — are tracked in beads._
 
 ## Key decisions already locked (don't re-litigate)
 - Two independent chains: local (classify→prefetch→summarize, no tools) / remote (tools).
