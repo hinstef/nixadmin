@@ -26,19 +26,24 @@ QUIT_ID = 9000
 
 
 def _menu_model(connected: bool, units: list[dict[str, str]] | None) -> list[MenuEntry]:
-    """gav.4 menu: a one-line status header, then Quit. gav.5 turns each failed
-    unit into its own fix-it row."""
+    """Status header, one clickable fix-it per failed unit, then Quit.
+
+    Ids: 1 = header (disabled), 100+ = fix-it rows, QUIT_ID = quit. Clicking a
+    fix-it row restarts exactly that unit (see :meth:`Tray._on_menu`)."""
+    rows: list[MenuEntry] = []
     if not connected:
-        head = MenuEntry(1, "⚠ daemon unreachable", enabled=False)
+        rows.append(MenuEntry(1, "⚠ daemon unreachable", enabled=False))
     elif units:
-        head = MenuEntry(1, f"⚠ {len(units)} service(s) failed", enabled=False)
+        rows.append(MenuEntry(1, f"⚠ {len(units)} service(s) failed", enabled=False))
+        for i, u in enumerate(units):
+            rows.append(MenuEntry(
+                100 + i, f"Restart {u['unit']}", unit=u["unit"], scope=u["scope"],
+            ))
     else:
-        head = MenuEntry(1, "✓ all services healthy", enabled=False)
-    return [
-        head,
-        MenuEntry(2, separator=True),
-        MenuEntry(QUIT_ID, "Quit nixadmin tray"),
-    ]
+        rows.append(MenuEntry(1, "✓ all services healthy", enabled=False))
+    rows.append(MenuEntry(2, separator=True))
+    rows.append(MenuEntry(QUIT_ID, "Quit nixadmin tray"))
+    return rows
 
 
 def _tooltip(connected: bool, units: list[dict[str, str]] | None) -> str:
@@ -70,11 +75,13 @@ class Tray:
     def _on_menu(self, entry: MenuEntry) -> None:
         if entry.id == QUIT_ID:
             self._stop.set()
-        elif entry.action:
-            asyncio.create_task(self._run_action(entry.action))
+        elif entry.unit and entry.scope:
+            asyncio.create_task(self._fix(entry.unit, entry.scope))
 
-    async def _run_action(self, text: str) -> None:
-        await self.client.run_action(text)
+    async def _fix(self, unit: str, scope: str) -> None:
+        """Restart a failed unit, then refresh so the icon reflects the outcome.
+        A restart that didn't stick simply stays amber — the honest signal."""
+        await self.client.restart_unit(unit, scope)
         await self._refresh()
 
     def _on_state(self, _connected: bool) -> None:

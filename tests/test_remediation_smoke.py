@@ -101,3 +101,41 @@ async def test_system_unit_without_privileged_path_declines(monkeypatch):
         Remediation("restart_unit", "cups"), confirm=_yes, status=_noop,
     )
     assert "system service" in out.lower()  # can't do it without the helper injected
+
+
+# --- restart_resolved: the structured (tray) path, no matching/confirm ------ #
+
+async def test_restart_resolved_system_verifies_and_reports(monkeypatch):
+    async def healthy(_unit, _scope):
+        return False  # is-failed → healthy after restart
+    monkeypatch.setattr(remediation, "_is_failed", healthy)
+    called = {}
+
+    async def fake_restart_system(unit):
+        called["unit"] = unit
+        return "ok"
+
+    out = await remediation.restart_resolved(
+        "cups.service", "system", status=_noop, restart_system=fake_restart_system,
+    )
+    assert called["unit"] == "cups.service"  # exact unit, privileged path
+    assert "healthy again" in out
+
+
+async def test_restart_resolved_still_failing_is_honest(monkeypatch):
+    async def still_failed(_unit, _scope):
+        return True
+    async def tail(_unit, _scope):
+        return "fatal: disk quota exceeded"
+    monkeypatch.setattr(remediation, "_is_failed", still_failed)
+    monkeypatch.setattr(remediation, "_unit_tail", tail)
+
+    out = await remediation.restart_resolved(
+        "cups.service", "system", status=_noop, restart_system=lambda _u: _ok(),
+    )
+    assert "still failing" in out
+    assert "disk quota exceeded" in out  # honest — shows the real reason, no fake "Done!"
+
+
+async def _ok():
+    return "ok"

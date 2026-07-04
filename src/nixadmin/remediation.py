@@ -122,6 +122,18 @@ async def run(
         log.info("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="cancelled")
         return "Cancelled — nothing changed."
 
+    return await restart_resolved(unit, scope, status=status, restart_system=restart_system)
+
+
+async def restart_resolved(
+    unit: str, scope: str, *, status: StatusFn, restart_system: RestartFn | None = None,
+) -> str:
+    """Restart an *already-resolved* unit and verify — no matching, no confirm.
+
+    The caller has decided which unit and scope: a query after its confirm, or the
+    tray after a click (the click is the consent). System units go through the
+    privileged helper; user units directly. The outcome is always **verified** and
+    reported honestly — a restart that didn't stick says so."""
     await status(f"Restarting {unit}…")
     try:
         if scope == "system":
@@ -131,18 +143,18 @@ async def run(
         else:
             await _run("systemctl", "--user", "restart", unit)
     except NixadminError as e:
-        log.warning("remediation", kind=rem.kind, unit=unit, scope=scope,
+        log.warning("remediation", kind="restart_unit", unit=unit, scope=scope,
                     outcome="failed", error=str(e))
         return f"I couldn't restart {unit} ({e})."
 
     await asyncio.sleep(1.0)  # let it settle before checking
     if not await _is_failed(unit, scope):
-        log.info("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="restarted")
+        log.info("remediation", kind="restart_unit", unit=unit, scope=scope, outcome="restarted")
         return f"Restarted {unit} — it's healthy again."
 
     # Restart didn't help — be honest and show the real reason rather than claim a fix.
     reason = await _unit_tail(unit, scope)
-    log.warning("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="still_failing")
+    log.warning("remediation", kind="restart_unit", unit=unit, scope=scope, outcome="still_failing")
     return (
         f"I restarted {unit}, but it's still failing — this needs a real fix, "
         f"not a restart:\n{reason}"

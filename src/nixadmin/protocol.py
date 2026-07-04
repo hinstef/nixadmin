@@ -170,20 +170,33 @@ class Failures:
     TYPE: ClassVar[str] = "failures"
 
 
+@dataclass
+class RestartUnit:
+    """Client → daemon: restart one already-resolved unit (a tray "fix it"). The
+    client names the exact ``unit`` and ``scope`` from a prior :class:`Failures`,
+    so no natural-language matching is involved — the deterministic core acts
+    directly. The daemon replies with the usual ``Status``/``Delta``/``Done``."""
+
+    id: str
+    unit: str
+    scope: str  # "system" | "user"
+    TYPE: ClassVar[str] = "restart_unit"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
 
 Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
-    | Confirm | Input | Ready | Event | ListFailures | Failures
+    | Confirm | Input | Ready | Event | ListFailures | Failures | RestartUnit
 )
 
 _REGISTRY: dict[str, type] = {
     cls.TYPE: cls
     for cls in (
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
-        Confirm, Input, Ready, Event, ListFailures, Failures,
+        Confirm, Input, Ready, Event, ListFailures, Failures, RestartUnit,
     )
 }
 

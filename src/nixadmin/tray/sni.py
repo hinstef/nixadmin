@@ -36,14 +36,15 @@ DBUS_PATH = "/org/freedesktop/DBus"
 
 @dataclass
 class MenuEntry:
-    """One row in the tray menu. ``action`` (when set) is the imperative sent to
-    the daemon on click — e.g. ``"restart cups.service"`` for a fix-it."""
+    """One row in the tray menu. When ``unit`` is set the row is a fix-it: clicking
+    it asks the daemon to restart exactly that ``unit`` in that ``scope``."""
 
     id: int
     label: str = ""
     enabled: bool = True
     separator: bool = False
-    action: str | None = field(default=None)
+    unit: str | None = field(default=None)
+    scope: str | None = field(default=None)
 
 
 class StatusNotifierItem(ServiceInterface):

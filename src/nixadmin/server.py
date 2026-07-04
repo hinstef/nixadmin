@@ -157,11 +157,37 @@ class Daemon:
             conn.deliver_response(msg)
         elif isinstance(msg, wire.ListFailures):
             asyncio.create_task(self._list_failures(conn, msg))
+        elif isinstance(msg, wire.RestartUnit):
+            asyncio.create_task(self._restart_unit(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from."""
         units = await remediation.failed_units()
         await conn.send(wire.Failures(id=msg.id, units=units))
+
+    async def _restart_unit(self, conn: ClientConn, msg: wire.RestartUnit) -> None:
+        """A tray fix-it: restart one already-resolved, currently-failed unit.
+
+        Deterministic and guarded — we act only on a unit the daemon *itself*
+        currently reports failed (so a stale or forged request can't restart an
+        arbitrary service), and the scope is taken from that live view, not the
+        client. Verified and reported like any remediation."""
+        try:
+            failed = {(u["unit"], u["scope"]): u for u in await remediation.failed_units()}
+            match = failed.get((msg.unit, msg.scope))
+            if match is None:
+                await conn.send(wire.Delta(id=msg.id, text=f"{msg.unit} isn't failing right now."))
+                await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
+                return
+            result = await remediation.restart_resolved(
+                match["unit"], match["scope"],
+                status=lambda text: conn.send(wire.Status(id=msg.id, text=text)),
+                restart_system=self.safety.apply_restart,
+            )
+            await conn.send(wire.Delta(id=msg.id, text=result))
+            await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
+        except NixadminError as e:
+            await conn.send(wire.Error(id=msg.id, text=str(e)))
 
     def _chains(self) -> list[str]:
         chains = ["remote"] if self.cfg.remote_model else []

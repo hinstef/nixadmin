@@ -129,11 +129,14 @@ class DaemonClient:
         reply = await self._request(wire.ListFailures(id=req_id), req_id)
         return reply.units if isinstance(reply, wire.Failures) else None
 
-    async def run_action(self, text: str) -> str | None:
-        """Send an imperative (e.g. ``restart X.service``) and wait for it to
-        finish. Confirms are auto-answered yes — the click is the consent."""
+    async def restart_unit(self, unit: str, scope: str) -> str | None:
+        """Ask the daemon to restart a specific failed unit (a fix-it click) and
+        wait for it to finish. Returns an error string on failure, else ``None``.
+
+        This is the deterministic path: the exact unit and scope come from a prior
+        :class:`~nixadmin.protocol.Failures`, so no natural-language matching runs."""
         req_id = uuid.uuid4().hex[:8]
-        reply = await self._request(wire.Query(id=req_id, text=text), req_id)
+        reply = await self._request(wire.RestartUnit(id=req_id, unit=unit, scope=scope), req_id)
         if isinstance(reply, wire.Error):
             return reply.text
-        return None if reply is None else "ok"
+        return None

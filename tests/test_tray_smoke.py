@@ -45,8 +45,18 @@ def test_menu_model_states():
     assert healthy[-1].id == QUIT_ID
     assert any(e.separator for e in healthy)
 
-    failed = _menu_model(True, [{"unit": "cups.service", "scope": "system", "description": ""}])
-    assert "1 service" in failed[0].label
+    failed = _menu_model(True, [
+        {"unit": "cups.service", "scope": "system", "description": ""},
+        {"unit": "x.service", "scope": "user", "description": ""},
+    ])
+    assert "2 service" in failed[0].label
+    # one clickable fix-it per failed unit, carrying exact unit + scope
+    fixits = [e for e in failed if e.unit]
+    assert [(e.unit, e.scope) for e in fixits] == [
+        ("cups.service", "system"), ("x.service", "user"),
+    ]
+    assert all(e.label.startswith("Restart ") for e in fixits)
+    assert failed[-1].id == QUIT_ID
 
     down = _menu_model(False, None)
     assert "unreachable" in down[0].label
