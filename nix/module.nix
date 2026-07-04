@@ -9,6 +9,10 @@ let
   # packages, so importlib entry-point discovery finds the modules they register.
   daemonPython = pkgs.python3.withPackages (_: [ pkg ] ++ cfg.extraModules);
 
+  # The tray is a lightweight client — just nixadmin (for protocol) + its deps
+  # (dbus-fast, structlog). No extra modules, no daemon internals.
+  trayPython = pkgs.python3.withPackages (_: [ pkg ]);
+
   # Privileged rebuild helper — runs as root, owns a group-accessible socket.
   helper = pkgs.writers.writePython3Bin "nixadmin-helper"
     { flakeIgnore = [ "E221" "E501" ]; }
@@ -192,6 +196,16 @@ in
       default = "/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json";
       description = "Vulkan ICD file inside the container (default: AMD RADV).";
     };
+
+    tray.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run the system-tray client (a StatusNotifierItem): a quiet dot that goes
+        amber when a service fails, with one-click fix-its. Needs a desktop with
+        an SNI tray host (KDE, or COSMIC's status-area applet).
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -236,6 +250,21 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${daemonPython}/bin/nixadmin-daemon";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
+    };
+
+    # The tray — a USER service tied to the graphical session (it needs the
+    # session bus and the desktop's SNI tray host). It reconnects on its own if
+    # the daemon restarts and re-registers if the tray host restarts.
+    systemd.user.services.nixadmin-tray = lib.mkIf cfg.tray.enable {
+      description = "nixadmin system-tray client";
+      after = [ "graphical-session.target" ];
+      wantedBy = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${trayPython}/bin/nixadmin-tray";
         Restart = "on-failure";
         RestartSec = "5s";
       };

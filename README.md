@@ -18,7 +18,7 @@ personal observability layer with a conversational interface on top.
 ## How it works
 
 ```
-clients (terminal · GTK · web)
+clients (terminal · tray · web)
         │  Unix socket, newline-delimited JSON  (src/nixadmin/protocol.py)
         ▼
    nixadmin daemon
@@ -38,6 +38,11 @@ Two LLM tiers, fully independent:
 |--------|--------------------|-----------------------------------|-------|
 | local  | small Ollama model | classify + prefetch + summarize   | none  |
 | remote | LiteLLM (Hermes subscription, API keys, OpenRouter…) | native tool calling | yes |
+
+The **tray** (`src/nixadmin/tray`) is a StatusNotifierItem client: a quiet dot —
+green healthy, amber a service failed — with one-click "restart" fix-its. It
+speaks only the protocol, so no LLM and no daemon internals. Enabled by default
+(`services.nixadmin.tray.enable`) wherever there's an SNI tray host.
 
 ## Writing a module
 
