@@ -183,20 +183,35 @@ class RestartUnit:
     TYPE: ClassVar[str] = "restart_unit"
 
 
+@dataclass
+class ExplainUnit:
+    """Client → daemon: explain (in plain words) why a unit failed. The daemon
+    grounds the local model in the unit's journal and streams back ``Delta`` text
+    — the LLM only *translates* machine→human here; it never acts. May emit a
+    ``Status`` ("warming up…") first if the model is cold."""
+
+    id: str
+    unit: str
+    scope: str  # "system" | "user"
+    TYPE: ClassVar[str] = "explain_unit"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
 
 Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
-    | Confirm | Input | Ready | Event | ListFailures | Failures | RestartUnit
+    | Confirm | Input | Ready | Event | ListFailures | Failures
+    | RestartUnit | ExplainUnit
 )
 
 _REGISTRY: dict[str, type] = {
     cls.TYPE: cls
     for cls in (
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
-        Confirm, Input, Ready, Event, ListFailures, Failures, RestartUnit,
+        Confirm, Input, Ready, Event, ListFailures, Failures,
+        RestartUnit, ExplainUnit,
     )
 }
 

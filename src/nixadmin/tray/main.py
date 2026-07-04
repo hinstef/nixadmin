@@ -17,7 +17,7 @@ from dbus_fast.aio import MessageBus
 from nixadmin.log import get_logger
 from nixadmin.tray import icons
 from nixadmin.tray.client import DaemonClient, socket_path
-from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, register
+from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, notify, register
 
 log = get_logger(__name__)
 
@@ -26,10 +26,9 @@ QUIT_ID = 9000
 
 
 def _menu_model(connected: bool, units: list[dict[str, str]] | None) -> list[MenuEntry]:
-    """Status header, one clickable fix-it per failed unit, then Quit.
+    """Status header, then per failed unit a Restart and an Explain row, then Quit.
 
-    Ids: 1 = header (disabled), 100+ = fix-it rows, QUIT_ID = quit. Clicking a
-    fix-it row restarts exactly that unit (see :meth:`Tray._on_menu`)."""
+    Ids: 1 = header (disabled), 100+i = restart, 200+i = explain, QUIT_ID = quit."""
     rows: list[MenuEntry] = []
     if not connected:
         rows.append(MenuEntry(1, "⚠ daemon unreachable", enabled=False))
@@ -37,7 +36,12 @@ def _menu_model(connected: bool, units: list[dict[str, str]] | None) -> list[Men
         rows.append(MenuEntry(1, f"⚠ {len(units)} service(s) failed", enabled=False))
         for i, u in enumerate(units):
             rows.append(MenuEntry(
-                100 + i, f"Restart {u['unit']}", unit=u["unit"], scope=u["scope"],
+                100 + i, f"Restart {u['unit']}",
+                unit=u["unit"], scope=u["scope"], action="restart",
+            ))
+            rows.append(MenuEntry(
+                200 + i, f"Explain {u['unit']}…",
+                unit=u["unit"], scope=u["scope"], action="explain",
             ))
     else:
         rows.append(MenuEntry(1, "✓ all services healthy", enabled=False))
@@ -61,6 +65,7 @@ class Tray:
         self._units: list[dict[str, str]] | None = None
         self._connected = False
         self._stop = asyncio.Event()
+        self._bus: MessageBus | None = None
         self.item = StatusNotifierItem(icons.pixmaps(icons.UNKNOWN))
         self.menu = DBusMenu(self._model, self._on_menu)
         self.client = DaemonClient(
@@ -75,14 +80,28 @@ class Tray:
     def _on_menu(self, entry: MenuEntry) -> None:
         if entry.id == QUIT_ID:
             self._stop.set()
-        elif entry.unit and entry.scope:
+        elif entry.action == "restart" and entry.unit and entry.scope:
             asyncio.create_task(self._fix(entry.unit, entry.scope))
+        elif entry.action == "explain" and entry.unit and entry.scope:
+            asyncio.create_task(self._explain(entry.unit, entry.scope))
 
     async def _fix(self, unit: str, scope: str) -> None:
         """Restart a failed unit, then refresh so the icon reflects the outcome.
         A restart that didn't stick simply stays amber — the honest signal."""
         await self.client.restart_unit(unit, scope)
         await self._refresh()
+
+    async def _explain(self, unit: str, scope: str) -> None:
+        """Ask the local model why a unit failed and show it as a notification —
+        a "Looking into…" bubble first, updated in place with the answer."""
+        if self._bus is None:
+            return
+        nid = await notify(self._bus, "nixadmin", f"Looking into {unit}…")
+        text = await self.client.explain_unit(unit, scope)
+        await notify(
+            self._bus, f"nixadmin — {unit}",
+            text or "I couldn't work out why just now.", replaces=nid,
+        )
 
     def _on_state(self, _connected: bool) -> None:
         self._schedule_refresh()
@@ -105,6 +124,7 @@ class Tray:
 
     async def run(self) -> None:
         bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        self._bus = bus
         await register(bus, self.item, self.menu)
         asyncio.create_task(self.client.run())
         poll = asyncio.create_task(self._poll())

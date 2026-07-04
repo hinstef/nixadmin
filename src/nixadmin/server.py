@@ -159,6 +159,8 @@ class Daemon:
             asyncio.create_task(self._list_failures(conn, msg))
         elif isinstance(msg, wire.RestartUnit):
             asyncio.create_task(self._restart_unit(conn, msg))
+        elif isinstance(msg, wire.ExplainUnit):
+            asyncio.create_task(self._explain_unit(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from."""
@@ -185,6 +187,39 @@ class Daemon:
                 restart_system=self.safety.apply_restart,
             )
             await conn.send(wire.Delta(id=msg.id, text=result))
+            await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
+        except NixadminError as e:
+            await conn.send(wire.Error(id=msg.id, text=str(e)))
+
+    async def _explain_unit(self, conn: ClientConn, msg: wire.ExplainUnit) -> None:
+        """On-demand, plain-words explanation of a failure.
+
+        Detection stays deterministic; here the local model only *translates* the
+        unit's journal into human terms (what/why/likely fix) — it never acts. It
+        fires only on this explicit request (lazy), and may warm up first."""
+        try:
+            failed = {(u["unit"], u["scope"]): u for u in await remediation.failed_units()}
+            match = failed.get((msg.unit, msg.scope))
+            if match is None:
+                await conn.send(wire.Delta(id=msg.id, text=f"{msg.unit} isn't failing right now."))
+                await conn.send(wire.Done(id=msg.id))
+                return
+            if not self.cfg.has_local:
+                await conn.send(wire.Delta(
+                    id=msg.id, text="I need a local model configured to explain this."))
+                await conn.send(wire.Done(id=msg.id))
+                return
+
+            log.info("explain", unit=match["unit"], scope=match["scope"])
+            journal = await remediation.unit_journal(match["unit"], match["scope"])
+            question = f"Why did {match['unit']} fail, and will restarting it fix it?"
+            message = local_llm.augment(question, journal)
+            if not await local_llm.is_ready(self.cfg.local_url, self.cfg.local_model):
+                await conn.send(wire.Status(id=msg.id, text="warming up the local model…"))
+            async for delta in local_llm.summarize(
+                message, model=self.cfg.local_model, url=self.cfg.local_url
+            ):
+                await conn.send(wire.Delta(id=msg.id, text=delta))
             await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
         except NixadminError as e:
             await conn.send(wire.Error(id=msg.id, text=str(e)))

@@ -50,12 +50,17 @@ def test_menu_model_states():
         {"unit": "x.service", "scope": "user", "description": ""},
     ])
     assert "2 service" in failed[0].label
-    # one clickable fix-it per failed unit, carrying exact unit + scope
-    fixits = [e for e in failed if e.unit]
-    assert [(e.unit, e.scope) for e in fixits] == [
+    # each failed unit gets a Restart and an Explain row, carrying exact unit+scope
+    restarts = [e for e in failed if e.action == "restart"]
+    explains = [e for e in failed if e.action == "explain"]
+    assert [(e.unit, e.scope) for e in restarts] == [
         ("cups.service", "system"), ("x.service", "user"),
     ]
-    assert all(e.label.startswith("Restart ") for e in fixits)
+    assert [(e.unit, e.scope) for e in explains] == [
+        ("cups.service", "system"), ("x.service", "user"),
+    ]
+    assert all(e.label.startswith("Restart ") for e in restarts)
+    assert all(e.label.startswith("Explain ") for e in explains)
     assert failed[-1].id == QUIT_ID
 
     down = _menu_model(False, None)

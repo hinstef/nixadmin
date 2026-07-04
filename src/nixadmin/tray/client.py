@@ -20,6 +20,7 @@ log = get_logger(__name__)
 
 RECONNECT_DELAY_S = 3.0
 REQUEST_TIMEOUT_S = 10.0
+EXPLAIN_TIMEOUT_S = 90.0  # the local model may cold-start (~6s) or be slow to stream
 
 
 def socket_path() -> str:
@@ -48,6 +49,7 @@ class DaemonClient:
         self.connected = False
         self._writer: asyncio.StreamWriter | None = None
         self._pending: dict[str, asyncio.Future[wire.Message]] = {}
+        self._collect: dict[str, list[str]] = {}  # accumulates Delta text per request
 
     async def run(self) -> None:
         """Connect-read-reconnect forever. Launch as a background task."""
@@ -89,6 +91,10 @@ class DaemonClient:
         elif isinstance(msg, wire.Confirm):
             # A fix-it action asked to confirm; the click *was* the confirmation.
             self._send(wire.Respond(id=msg.id, confirmed=True))
+        elif isinstance(msg, wire.Delta):
+            buf = self._collect.get(msg.id)
+            if buf is not None:
+                buf.append(msg.text)
         elif isinstance(msg, (wire.Failures, wire.Done, wire.Error)):
             fut = self._pending.pop(msg.id, None)
             if fut and not fut.done():
@@ -109,16 +115,22 @@ class DaemonClient:
             return False
         return True
 
-    async def _request(self, msg: wire.Message, req_id: str) -> wire.Message | None:
+    async def _request(
+        self, msg: wire.Message, req_id: str, *,
+        collect: bool = False, timeout_s: float = REQUEST_TIMEOUT_S,
+    ) -> wire.Message | None:
         if not self.connected:
             return None
         fut: asyncio.Future[wire.Message] = asyncio.get_event_loop().create_future()
         self._pending[req_id] = fut
+        if collect:
+            self._collect[req_id] = []
         if not self._send(msg):
             self._pending.pop(req_id, None)
+            self._collect.pop(req_id, None)
             return None
         try:
-            return await asyncio.wait_for(fut, REQUEST_TIMEOUT_S)
+            return await asyncio.wait_for(fut, timeout_s)
         except (TimeoutError, ConnectionError):
             self._pending.pop(req_id, None)
             return None
@@ -140,3 +152,17 @@ class DaemonClient:
         if isinstance(reply, wire.Error):
             return reply.text
         return None
+
+    async def explain_unit(self, unit: str, scope: str) -> str | None:
+        """Ask the daemon for a plain-words explanation of why a unit failed and
+        collect the streamed answer. The local model may warm up first, so this
+        allows a long wait. Returns the text, or ``None`` if it couldn't answer."""
+        req_id = uuid.uuid4().hex[:8]
+        reply = await self._request(
+            wire.ExplainUnit(id=req_id, unit=unit, scope=scope),
+            req_id, collect=True, timeout_s=EXPLAIN_TIMEOUT_S,
+        )
+        text = "".join(self._collect.pop(req_id, []))
+        if isinstance(reply, wire.Error):
+            return reply.text
+        return text or None

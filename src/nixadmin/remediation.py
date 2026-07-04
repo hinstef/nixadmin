@@ -161,6 +161,11 @@ async def restart_resolved(
     )
 
 
+async def unit_journal(unit: str, scope: str) -> str:
+    """Recent journal lines for a unit — grounding for an on-demand explanation."""
+    return await _unit_tail(unit, scope)
+
+
 async def failed_units() -> list[dict[str, str]]:
     """Currently-failed service units across both scopes, as structured data for a
     client (the tray) to render per-unit actions: ``{unit, scope, description}``."""

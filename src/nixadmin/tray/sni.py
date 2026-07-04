@@ -32,12 +32,31 @@ WATCHER_NAME = "org.kde.StatusNotifierWatcher"
 WATCHER_PATH = "/StatusNotifierWatcher"
 DBUS_NAME = "org.freedesktop.DBus"
 DBUS_PATH = "/org/freedesktop/DBus"
+NOTIFY_NAME = "org.freedesktop.Notifications"
+NOTIFY_PATH = "/org/freedesktop/Notifications"
+
+
+async def notify(bus: MessageBus, title: str, body: str, *, replaces: int = 0) -> int:
+    """Send a desktop notification and return its id (pass it back as ``replaces``
+    to update the same bubble in place). Best-effort: returns 0 if no server."""
+    try:
+        introspection = await bus.introspect(NOTIFY_NAME, NOTIFY_PATH)
+        obj = bus.get_proxy_object(NOTIFY_NAME, NOTIFY_PATH, introspection)
+        iface = obj.get_interface(NOTIFY_NAME)
+        result = await iface.call_notify(
+            "nixadmin", replaces, "dialog-information", title, body, [], {}, -1,
+        )
+        return int(result)
+    except Exception as e:  # noqa: BLE001 — a missing notification server must not crash the tray
+        log.warning("notify failed", error=str(e))
+        return 0
 
 
 @dataclass
 class MenuEntry:
-    """One row in the tray menu. When ``unit`` is set the row is a fix-it: clicking
-    it asks the daemon to restart exactly that ``unit`` in that ``scope``."""
+    """One row in the tray menu. When ``unit`` is set the row acts on that exact
+    ``unit``/``scope``; ``action`` says how — ``"restart"`` (fix it) or
+    ``"explain"`` (ask the local model why it failed)."""
 
     id: int
     label: str = ""
@@ -45,6 +64,7 @@ class MenuEntry:
     separator: bool = False
     unit: str | None = field(default=None)
     scope: str | None = field(default=None)
+    action: str | None = field(default=None)  # "restart" | "explain"
 
 
 class StatusNotifierItem(ServiceInterface):
