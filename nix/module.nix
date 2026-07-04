@@ -9,9 +9,9 @@ let
   # packages, so importlib entry-point discovery finds the modules they register.
   daemonPython = pkgs.python3.withPackages (_: [ pkg ] ++ cfg.extraModules);
 
-  # The tray is a lightweight client — just nixadmin (for protocol) + its deps
-  # (dbus-fast, structlog). No extra modules, no daemon internals.
-  trayPython = pkgs.python3.withPackages (_: [ pkg ]);
+  # The tray and web view are lightweight clients — just nixadmin (for protocol)
+  # + its deps (dbus-fast, structlog). No extra modules, no daemon internals.
+  clientPython = pkgs.python3.withPackages (_: [ pkg ]);
 
   # Privileged rebuild helper — runs as root, owns a group-accessible socket.
   helper = pkgs.writers.writePython3Bin "nixadmin-helper"
@@ -206,6 +206,22 @@ in
         an SNI tray host (KDE, or COSMIC's status-area applet).
       '';
     };
+
+    web.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run the detail web view: a loopback-only, token-gated page (the tray's
+        "Open detail" link opens it) showing failed units, journals, and per-unit
+        restart/explain. Bound to 127.0.0.1; never exposed off the machine.
+      '';
+    };
+
+    web.port = lib.mkOption {
+      type = lib.types.port;
+      default = 7677;
+      description = "Loopback port for the detail web view.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -264,7 +280,22 @@ in
       wantedBy = [ "graphical-session.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${trayPython}/bin/nixadmin-tray";
+        ExecStart = "${clientPython}/bin/nixadmin-tray";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
+    };
+
+    # The detail web view — a loopback-only, token-gated user service. Started
+    # with the session; the tray's "Open detail" opens the URL it publishes.
+    systemd.user.services.nixadmin-web = lib.mkIf cfg.web.enable {
+      description = "nixadmin detail web view (loopback)";
+      after = [ "graphical-session.target" ];
+      wantedBy = [ "default.target" ];
+      environment = { NIXADMIN_WEB_PORT = toString cfg.web.port; };
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${clientPython}/bin/nixadmin-web";
         Restart = "on-failure";
         RestartSec = "5s";
       };

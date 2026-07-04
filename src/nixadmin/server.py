@@ -161,6 +161,8 @@ class Daemon:
             asyncio.create_task(self._restart_unit(conn, msg))
         elif isinstance(msg, wire.ExplainUnit):
             asyncio.create_task(self._explain_unit(conn, msg))
+        elif isinstance(msg, wire.UnitJournal):
+            asyncio.create_task(self._unit_journal(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from."""
@@ -190,6 +192,12 @@ class Daemon:
             await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
         except NixadminError as e:
             await conn.send(wire.Error(id=msg.id, text=str(e)))
+
+    async def _unit_journal(self, conn: ClientConn, msg: wire.UnitJournal) -> None:
+        """Recent journal lines for a unit (read-only detail for the web view)."""
+        scope = msg.scope if msg.scope in ("system", "user") else "system"
+        text = await remediation.unit_journal(msg.unit, scope)
+        await conn.send(wire.Journal(id=msg.id, unit=msg.unit, text=text))
 
     async def _explain_unit(self, conn: ClientConn, msg: wire.ExplainUnit) -> None:
         """On-demand, plain-words explanation of a failure.

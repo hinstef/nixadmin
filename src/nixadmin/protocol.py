@@ -196,6 +196,27 @@ class ExplainUnit:
     TYPE: ClassVar[str] = "explain_unit"
 
 
+@dataclass
+class UnitJournal:
+    """Client → daemon: recent journal lines for a unit (rich detail for the web
+    view). Read-only; no LLM."""
+
+    id: str
+    unit: str
+    scope: str  # "system" | "user"
+    TYPE: ClassVar[str] = "unit_journal"
+
+
+@dataclass
+class Journal:
+    """Daemon → client: the recent journal text for a unit."""
+
+    id: str
+    unit: str
+    text: str
+    TYPE: ClassVar[str] = "journal"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
@@ -203,7 +224,7 @@ class ExplainUnit:
 Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
     | Confirm | Input | Ready | Event | ListFailures | Failures
-    | RestartUnit | ExplainUnit
+    | RestartUnit | ExplainUnit | UnitJournal | Journal
 )
 
 _REGISTRY: dict[str, type] = {
@@ -211,7 +232,7 @@ _REGISTRY: dict[str, type] = {
     for cls in (
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
         Confirm, Input, Ready, Event, ListFailures, Failures,
-        RestartUnit, ExplainUnit,
+        RestartUnit, ExplainUnit, UnitJournal, Journal,
     )
 }
 

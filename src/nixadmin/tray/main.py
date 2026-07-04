@@ -18,17 +18,23 @@ from nixadmin.log import get_logger
 from nixadmin.tray import icons
 from nixadmin.tray.client import DaemonClient, socket_path
 from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, notify, register
+from nixadmin.web.server import url_file
 
 log = get_logger(__name__)
 
 POLL_INTERVAL_S = 20.0
+DETAIL_ID = 8000
 QUIT_ID = 9000
 
 
-def _menu_model(connected: bool, units: list[dict[str, str]] | None) -> list[MenuEntry]:
-    """Status header, then per failed unit a Restart and an Explain row, then Quit.
+def _menu_model(
+    connected: bool, units: list[dict[str, str]] | None, *, web_available: bool = False,
+) -> list[MenuEntry]:
+    """Status header, then per failed unit a Restart and an Explain row, an
+    optional "Open detail" link, then Quit.
 
-    Ids: 1 = header (disabled), 100+i = restart, 200+i = explain, QUIT_ID = quit."""
+    Ids: 1 = header (disabled), 100+i = restart, 200+i = explain,
+    DETAIL_ID = open detail, QUIT_ID = quit."""
     rows: list[MenuEntry] = []
     if not connected:
         rows.append(MenuEntry(1, "⚠ daemon unreachable", enabled=False))
@@ -46,6 +52,8 @@ def _menu_model(connected: bool, units: list[dict[str, str]] | None) -> list[Men
     else:
         rows.append(MenuEntry(1, "✓ all services healthy", enabled=False))
     rows.append(MenuEntry(2, separator=True))
+    if web_available:
+        rows.append(MenuEntry(DETAIL_ID, "Open detail…", action="detail"))
     rows.append(MenuEntry(QUIT_ID, "Quit nixadmin tray"))
     return rows
 
@@ -75,15 +83,30 @@ class Tray:
         )
 
     def _model(self) -> list[MenuEntry]:
-        return _menu_model(self._connected, self._units)
+        return _menu_model(self._connected, self._units, web_available=url_file().exists())
 
     def _on_menu(self, entry: MenuEntry) -> None:
         if entry.id == QUIT_ID:
             self._stop.set()
+        elif entry.action == "detail":
+            asyncio.create_task(self._open_detail())
         elif entry.action == "restart" and entry.unit and entry.scope:
             asyncio.create_task(self._fix(entry.unit, entry.scope))
         elif entry.action == "explain" and entry.unit and entry.scope:
             asyncio.create_task(self._explain(entry.unit, entry.scope))
+
+    async def _open_detail(self) -> None:
+        """Open the token-gated web view in the browser (URL written by the web
+        service). The token stays local — we only hand it to the user's browser."""
+        try:
+            url = url_file().read_text().strip()
+        except OSError:
+            return
+        if url:
+            await asyncio.create_subprocess_exec(
+                "xdg-open", url,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
 
     async def _fix(self, unit: str, scope: str) -> None:
         """Restart a failed unit, then refresh so the icon reflects the outcome.

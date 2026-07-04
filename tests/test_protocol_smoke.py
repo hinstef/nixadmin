@@ -33,6 +33,8 @@ def test_roundtrip_every_message_type():
         p.ListFailures(id="q1"),
         p.RestartUnit(id="q1", unit="cups.service", scope="system"),
         p.ExplainUnit(id="q1", unit="cups.service", scope="user"),
+        p.UnitJournal(id="q1", unit="cups.service", scope="system"),
+        p.Journal(id="q1", unit="cups.service", text="line1\nline2"),
         p.Failures(id="q1", units=[
             {"unit": "cups.service", "scope": "system", "description": "CUPS printing"},
             {"unit": "nixadmin-backup.service", "scope": "user", "description": "Nightly backup"},
