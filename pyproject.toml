@@ -27,6 +27,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
 [project.scripts]
 nixadmin = "nixadmin.cli:main"
 nixadmin-daemon = "nixadmin.server:main"
+nixadmin-tray = "nixadmin.tray.main:main"
 
 # Third-party modules register here. Built-in modules are loaded directly (not
 # via entry points) and always take precedence.
@@ -43,10 +44,23 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
+[tool.ruff.lint.per-file-ignores]
+# sni.py uses literal string annotations (``-> 's'``) as D-Bus type signatures,
+# not Python types: they must stay quoted (UP037) and read as "undefined names"
+# to a linter that treats them as forward refs (F821).
+"src/nixadmin/tray/sni.py" = ["UP037", "F821", "F722"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 warn_unused_ignores = true
+
+# The D-Bus interface classes annotate methods with D-Bus signatures, not Python
+# types (``-> 's'``), which mypy can't and shouldn't check. The rest of the tray
+# (client, icons, main) stays under strict.
+[[tool.mypy.overrides]]
+module = "nixadmin.tray.sni"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
