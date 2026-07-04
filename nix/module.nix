@@ -278,6 +278,9 @@ in
       description = "nixadmin system-tray client";
       after = [ "graphical-session.target" ];
       wantedBy = [ "graphical-session.target" ];
+      # xdg-open (xdg-utils) for the "Open detail" link; a user service has a
+      # minimal PATH otherwise.
+      path = [ pkgs.xdg-utils ];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${clientPython}/bin/nixadmin-tray";
