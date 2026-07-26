@@ -23,6 +23,13 @@ def _default_socket() -> str:
     return str(Path(base) / "nixadmin.sock")
 
 
+def _default_state_dir() -> str:
+    """Where the persistent event store lives, honouring the XDG base-dir spec."""
+    state = os.environ.get("XDG_STATE_HOME")
+    base = Path(state) if state else Path.home() / ".local" / "state"
+    return str(base / "nixadmin")
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     # identity / target
@@ -39,6 +46,10 @@ class Config:
 
     default_chain: Chain = "remote"
     history: str = "null"  # "null" | "sqlite" (future)
+    # Persistent system-event timeline (observability substrate). On by default —
+    # legibility is the point. "null" opts out. See nixadmin.store.
+    events: str = "sqlite"  # "sqlite" | "null"
+    state_dir: str = field(default_factory=lambda: _default_state_dir())
     socket_path: str = field(default_factory=_default_socket)
 
     log_format: Literal["json", "console"] = "json"
@@ -91,6 +102,8 @@ class Config:
             remote_base=remote_base,
             default_chain=default_chain,  # type: ignore[arg-type]
             history=get("HISTORY", "null"),
+            events=get("EVENTS", "sqlite"),
+            state_dir=get("STATE_DIR", _default_state_dir()),
             socket_path=get("SOCKET", _default_socket()),
             log_format=get("LOG_FORMAT", "json"),  # type: ignore[arg-type]
             log_level=get("LOG_LEVEL", "INFO"),

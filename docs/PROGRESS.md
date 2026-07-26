@@ -139,6 +139,22 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   - Next slices tracked in beads (label `remediation`).
 - Audit trail — DONE: write-actions emit structured journald events
   (`journalctl --user -u nixadmin-daemon -o json | jq 'select(.event=="action")'`).
+- **Persistent event store + web hub — DONE + validated live (2026-07-26).** New
+  daemon-owned `store.py` (stdlib SQLite, `<stateDir>/events.db`, on by default)
+  is the observability substrate: an append-only timeline of `failure_observed`/
+  `failure_cleared` (on transition), `explanation`, `restart`, `journal_snapshot`,
+  `monitor_event`. Daemon is the single writer; clients read it over a new wire
+  message (`get_timeline`→`timeline`, protocol **v2**, additive). The web view is
+  now a **hub**: a live "Now" section (whose refresh no longer wipes detail — the
+  old "explanation/journal disappears after a few seconds" bug) plus a persistent
+  "Timeline" that survives refreshes *and* daemon restarts. The **tray "Explain"**
+  now deep-links into the hub (`?explain=<unit>`) and the daemon persists the
+  answer, replacing the transient desktop notification (resolves `observations.md`).
+  Distinct from conversation `history.py` (still NullHistory) — see
+  [`adr/0003-event-store.md`](adr/0003-event-store.md). **Verified live:** failing
+  transient unit → failure observed, journal, and a real qwen2.5:3b explanation all
+  persisted; all 4 events survived a daemon kill+restart and rendered via
+  `/api/timeline`. This is the substrate the **autofix** engine (`e7q`) reads/writes.
 
 ### Diagnosis findings to fix (from live testing 2026-06-26)
 - [x] **Cold-start false all-clear (SAFETY).** *(done 2026-06-27)* The model's

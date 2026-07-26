@@ -24,7 +24,9 @@ from nixadmin.errors import ProtocolError
 
 #: Protocol version, sent in :class:`Hello`. On mismatch a client warns and
 #: proceeds (best-effort) rather than disconnecting — see the spec.
-VERSION = 1
+#: v2 added the timeline messages (``get_timeline`` / ``timeline``); they are
+#: additive, so an older client simply never asks for them.
+VERSION = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +219,28 @@ class Journal:
     TYPE: ClassVar[str] = "journal"
 
 
+@dataclass
+class GetTimeline:
+    """Client → daemon: request the persisted system-event timeline (failures,
+    explanations, restarts, journals, monitor events) for the web hub. Read-only.
+    ``unit`` narrows to one service's history; ``None`` returns everything."""
+
+    id: str
+    limit: int = 100
+    unit: str | None = None
+    TYPE: ClassVar[str] = "get_timeline"
+
+
+@dataclass
+class Timeline:
+    """Daemon → client: recent timeline events, newest first. Each entry is a dict
+    ``{id, ts, kind, unit, scope, severity, text, meta}`` (see nixadmin.store)."""
+
+    id: str
+    events: list[dict[str, object]]
+    TYPE: ClassVar[str] = "timeline"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
@@ -224,7 +248,7 @@ class Journal:
 Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
     | Confirm | Input | Ready | Event | ListFailures | Failures
-    | RestartUnit | ExplainUnit | UnitJournal | Journal
+    | RestartUnit | ExplainUnit | UnitJournal | Journal | GetTimeline | Timeline
 )
 
 _REGISTRY: dict[str, type] = {
@@ -232,7 +256,7 @@ _REGISTRY: dict[str, type] = {
     for cls in (
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
         Confirm, Input, Ready, Event, ListFailures, Failures,
-        RestartUnit, ExplainUnit, UnitJournal, Journal,
+        RestartUnit, ExplainUnit, UnitJournal, Journal, GetTimeline, Timeline,
     )
 }
 

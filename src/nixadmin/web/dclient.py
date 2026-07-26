@@ -69,6 +69,14 @@ class Daemon:
             terminal=(wire.Journal,))
         return msg.text if isinstance(msg, wire.Journal) else None
 
+    def timeline(self, limit: int = 100, unit: str | None = None) -> list[dict[str, object]]:
+        """The persisted event timeline (newest first), or ``[]`` if unreachable."""
+        req: dict[str, object] = {"type": "get_timeline", "id": _id(), "limit": limit}
+        if unit:
+            req["unit"] = unit
+        msg, _ = self._roundtrip(req, terminal=(wire.Timeline,))
+        return msg.events if isinstance(msg, wire.Timeline) else []
+
     def restart(self, unit: str, scope: str) -> str:
         msg, deltas = self._roundtrip(
             {"type": "restart_unit", "id": _id(), "unit": unit, "scope": scope},

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from urllib.parse import quote
 
 from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
@@ -17,7 +18,7 @@ from dbus_fast.aio import MessageBus
 from nixadmin.log import get_logger
 from nixadmin.tray import icons
 from nixadmin.tray.client import DaemonClient, socket_path
-from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, notify, register
+from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, register
 from nixadmin.web.server import url_file
 
 log = get_logger(__name__)
@@ -73,7 +74,6 @@ class Tray:
         self._units: list[dict[str, str]] | None = None
         self._connected = False
         self._stop = asyncio.Event()
-        self._bus: MessageBus | None = None
         self.item = StatusNotifierItem(icons.pixmaps(icons.UNKNOWN))
         self.menu = DBusMenu(self._model, self._on_menu)
         self.client = DaemonClient(
@@ -95,16 +95,18 @@ class Tray:
         elif entry.action == "explain" and entry.unit and entry.scope:
             asyncio.create_task(self._explain(entry.unit, entry.scope))
 
-    async def _open_detail(self) -> None:
-        """Open the token-gated web view in the browser (URL written by the web
-        service). The token stays local — we only hand it to the user's browser."""
+    async def _open_detail(self, extra: str = "") -> None:
+        """Open the token-gated web hub in the browser (URL written by the web
+        service). The token stays local — we only hand it to the user's browser.
+        ``extra`` appends query params (already ``&``-prefixed) for a deep link;
+        the URL always carries ``?token=…`` so appending with ``&`` is valid."""
         try:
             url = url_file().read_text().strip()
         except OSError:
             return
         if url:
             await asyncio.create_subprocess_exec(
-                "xdg-open", url,
+                "xdg-open", url + extra,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
 
@@ -115,16 +117,11 @@ class Tray:
         await self._refresh()
 
     async def _explain(self, unit: str, scope: str) -> None:
-        """Ask the local model why a unit failed and show it as a notification —
-        a "Looking into…" bubble first, updated in place with the answer."""
-        if self._bus is None:
-            return
-        nid = await notify(self._bus, "nixadmin", f"Looking into {unit}…")
-        text = await self.client.explain_unit(unit, scope)
-        await notify(
-            self._bus, f"nixadmin — {unit}",
-            text or "I couldn't work out why just now.", replaces=nid,
-        )
+        """Open the web hub deep-linked to this unit; the hub runs the explanation
+        and shows it there (and the daemon persists it to the timeline). This
+        replaces the old transient desktop notification — the explanation now has
+        a home that doesn't vanish after a few seconds."""
+        await self._open_detail(f"&explain={quote(unit)}&scope={quote(scope)}")
 
     def _on_state(self, _connected: bool) -> None:
         self._schedule_refresh()
@@ -147,7 +144,6 @@ class Tray:
 
     async def run(self) -> None:
         bus = await MessageBus(bus_type=BusType.SESSION).connect()
-        self._bus = bus
         await register(bus, self.item, self.menu)
         asyncio.create_task(self.client.run())
         poll = asyncio.create_task(self._poll())

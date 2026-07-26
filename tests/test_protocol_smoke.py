@@ -35,6 +35,14 @@ def test_roundtrip_every_message_type():
         p.ExplainUnit(id="q1", unit="cups.service", scope="user"),
         p.UnitJournal(id="q1", unit="cups.service", scope="system"),
         p.Journal(id="q1", unit="cups.service", text="line1\nline2"),
+        p.GetTimeline(id="q1"),
+        p.GetTimeline(id="q2", limit=50, unit="cups.service"),
+        p.Timeline(id="q1", events=[
+            {"id": 3, "ts": 1.0, "kind": "explanation", "unit": "cups.service",
+             "scope": "system", "severity": None, "text": "it broke",
+             "meta": {"model": "qwen2.5:3b"}},
+        ]),
+        p.Timeline(id="q2", events=[]),
         p.Failures(id="q1", units=[
             {"unit": "cups.service", "scope": "system", "description": "CUPS printing"},
             {"unit": "nixadmin-backup.service", "scope": "user", "description": "Nightly backup"},

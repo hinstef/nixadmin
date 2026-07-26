@@ -111,6 +111,15 @@ class Handler(BaseHTTPRequestHandler):
             unit = (qs.get("unit") or [""])[0]
             scope = (qs.get("scope") or ["system"])[0]
             self._json(200, {"text": self.app.dclient.journal(unit, scope) or ""})
+        elif parsed.path == "/api/timeline":
+            if not self._guard(qs, mutation=False):
+                return
+            tl_unit = (qs.get("unit") or [""])[0] or None
+            try:
+                limit = int((qs.get("limit") or ["100"])[0])
+            except ValueError:
+                limit = 100
+            self._json(200, {"events": self.app.dclient.timeline(limit, tl_unit)})
         else:
             self._json(404, {"error": "not found"})
 

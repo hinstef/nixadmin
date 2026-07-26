@@ -89,11 +89,16 @@ let
     NIXADMIN_REMOTE_BASE = cfg.remote.base;
     NIXADMIN_CHAIN = cfg.defaultChain;
     NIXADMIN_HISTORY = cfg.history;
+    NIXADMIN_EVENTS = cfg.events;
     NIXADMIN_LOG_FORMAT = cfg.logFormat;
     # Fetcher commands (nmcli, ping, lsblk, nixadmin-apps…) resolve via the system
     # profile; git + nix are needed by the action tier (worktree-validated edits).
     # mkForce overrides the default user-service PATH rather than conflicting.
     PATH = lib.mkForce "${pkgs.git}/bin:${pkgs.nix}/bin:/run/wrappers/bin:/run/current-system/sw/bin";
+  } // lib.optionalAttrs (cfg.stateDir != "") {
+    # Where the persistent event store lives. Left unset by default so the daemon
+    # derives it from the user's XDG_STATE_HOME (~/.local/state/nixadmin) at runtime.
+    NIXADMIN_STATE_DIR = cfg.stateDir;
   };
 
   ollamaEnabled = cfg.ollama.enable && cfg.local.model != "";
@@ -166,6 +171,27 @@ in
       type = lib.types.enum [ "null" ];
       default = "null";
       description = "History backend (only 'null' in v1).";
+    };
+
+    events = lib.mkOption {
+      type = lib.types.enum [ "sqlite" "null" ];
+      default = "sqlite";
+      description = ''
+        Persistent system-event timeline backend (the observability substrate
+        behind the web hub). "sqlite" writes <stateDir>/events.db; "null" disables
+        persistence.
+      '';
+    };
+
+    stateDir = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "/home/alice/.local/state/nixadmin";
+      description = ''
+        Directory for the daemon's persistent state (the event store). Empty (the
+        default) lets the daemon derive it from the user's XDG_STATE_HOME, i.e.
+        ~/.local/state/nixadmin.
+      '';
     };
 
     logFormat = lib.mkOption {

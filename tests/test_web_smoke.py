@@ -55,7 +55,16 @@ def test_page_embeds_token_and_no_placeholder_leaks():
     assert "nixadmin — system health" in html
 
 
+def test_page_has_hub_sections_and_timeline_wiring():
+    """The hub is a two-section page (Now + Timeline) that reads the event store."""
+    html = page.render(security.new_token())
+    assert ">Now<" in html and ">Timeline<" in html
+    assert "/api/timeline" in html          # timeline is fetched, not baked in
+    assert 'PARAMS.get("explain")' in html  # tray deep-link path exists
+
+
 def test_daemon_client_graceful_when_socket_absent(tmp_path):
     d = Daemon(str(tmp_path / "nope.sock"))
     assert d.list_failures() is None       # unreachable → None, not a crash
     assert d.journal("x.service", "user") is None
+    assert d.timeline() == []              # unreachable → empty, not a crash

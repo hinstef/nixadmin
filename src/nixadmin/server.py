@@ -32,6 +32,7 @@ from nixadmin.routing import Chain, Decision, detect_mutation, resolve, resolve_
 from nixadmin.safety import SafetyGate
 from nixadmin.sdk import Module
 from nixadmin.session import SessionRegistry
+from nixadmin.store import make_store
 
 log = logmod.get_logger(__name__)
 
@@ -77,6 +78,12 @@ class Daemon:
         self.cfg = config
         self.modules = load_modules()
         self.history = make_history(config.history)
+        # Persistent system-event timeline (failures, explanations, restarts…).
+        # The daemon is the single writer; clients read it back over the socket.
+        self.store = make_store(config.events, config.state_dir)
+        # Last-seen failed units, so we can log failure_observed / failure_cleared
+        # on transitions rather than re-logging the same failure every poll.
+        self._seen_failures: set[tuple[str, str]] = set()
         self.sessions = SessionRegistry()
         self.safety = SafetyGate(HELPER_SOCKET)
         self.context = ContextCache([
@@ -111,6 +118,9 @@ class Daemon:
 
     async def aclose(self) -> None:
         await self.monitors.aclose()
+        close = getattr(self.store, "close", None)
+        if callable(close):
+            close()
         Path(self.cfg.socket_path).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op
 
     # ---- connection handling --------------------------------------------- #
@@ -163,11 +173,39 @@ class Daemon:
             asyncio.create_task(self._explain_unit(conn, msg))
         elif isinstance(msg, wire.UnitJournal):
             asyncio.create_task(self._unit_journal(conn, msg))
+        elif isinstance(msg, wire.GetTimeline):
+            asyncio.create_task(self._get_timeline(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
-        """Structured current failures for a client to render actions from."""
+        """Structured current failures for a client to render actions from.
+
+        Also the transition detector: comparing the live set against the last-seen
+        set turns the tray/web poll into failure_observed / failure_cleared events
+        on the persistent timeline, with no extra polling loop of our own."""
         units = await remediation.failed_units()
+        await self._record_failure_transitions(units)
         await conn.send(wire.Failures(id=msg.id, units=units))
+
+    async def _record_failure_transitions(self, units: list[dict[str, str]]) -> None:
+        current = {(u["unit"], u["scope"]): u for u in units}
+        keys = set(current)
+        for key in keys - self._seen_failures:
+            unit, scope = key
+            await self.store.append(
+                "failure_observed", unit=unit, scope=scope, severity="warning",
+                text=current[key].get("description") or f"{unit} failed",
+            )
+        for unit, scope in self._seen_failures - keys:
+            await self.store.append(
+                "failure_cleared", unit=unit, scope=scope, severity="info",
+                text=f"{unit} recovered",
+            )
+        self._seen_failures = keys
+
+    async def _get_timeline(self, conn: ClientConn, msg: wire.GetTimeline) -> None:
+        """Read-only: the persisted event timeline for the web hub."""
+        events = await self.store.recent(msg.limit, unit=msg.unit)
+        await conn.send(wire.Timeline(id=msg.id, events=events))
 
     async def _restart_unit(self, conn: ClientConn, msg: wire.RestartUnit) -> None:
         """A tray fix-it: restart one already-resolved, currently-failed unit.
@@ -188,6 +226,10 @@ class Daemon:
                 status=lambda text: conn.send(wire.Status(id=msg.id, text=text)),
                 restart_system=self.safety.apply_restart,
             )
+            await self.store.append(
+                "restart", unit=match["unit"], scope=match["scope"],
+                text=result, meta={"source": "tray"},
+            )
             await conn.send(wire.Delta(id=msg.id, text=result))
             await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
         except NixadminError as e:
@@ -197,6 +239,7 @@ class Daemon:
         """Recent journal lines for a unit (read-only detail for the web view)."""
         scope = msg.scope if msg.scope in ("system", "user") else "system"
         text = await remediation.unit_journal(msg.unit, scope)
+        await self.store.append("journal_snapshot", unit=msg.unit, scope=scope, text=text)
         await conn.send(wire.Journal(id=msg.id, unit=msg.unit, text=text))
 
     async def _explain_unit(self, conn: ClientConn, msg: wire.ExplainUnit) -> None:
@@ -224,10 +267,17 @@ class Daemon:
             message = local_llm.augment(question, journal)
             if not await local_llm.is_ready(self.cfg.local_url, self.cfg.local_model):
                 await conn.send(wire.Status(id=msg.id, text="warming up the local model…"))
+            answer = ""
             async for delta in local_llm.summarize(
                 message, model=self.cfg.local_model, url=self.cfg.local_url
             ):
+                answer += delta
                 await conn.send(wire.Delta(id=msg.id, text=delta))
+            if answer.strip():
+                await self.store.append(
+                    "explanation", unit=match["unit"], scope=match["scope"],
+                    text=answer, meta={"model": self.cfg.local_model},
+                )
             await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
         except NixadminError as e:
             await conn.send(wire.Error(id=msg.id, text=str(e)))
@@ -360,6 +410,9 @@ class Daemon:
             confirm=lambda text: conn.confirm(query.id, text),
             status=lambda text: conn.send(wire.Status(id=query.id, text=text)),
             restart_system=self.safety.apply_restart,
+        )
+        await self.store.append(
+            "restart", text=result, meta={"source": "query", "request": query.text},
         )
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
@@ -510,6 +563,8 @@ class Daemon:
         await self._local_ready_evt.wait()
 
     async def _broadcast(self, source: str, severity: str, text: str) -> None:
+        await self.store.append("monitor_event", severity=severity, text=text,
+                                meta={"source": source})
         msg = wire.Event(source=source, severity=severity, text=text)
         await self._send_all(msg)
 
