@@ -59,11 +59,23 @@ the raw query. That's neither a real competence judgment nor a privacy boundary.
   asserted — the privacy brand as a concrete mechanic (`ux.md`).
 - Cost: `assess_escalation` adds one cheap local generate per read query. Accepted
   for the "never silent" guarantee; can be folded into classify later if it bites.
-- **Scope of v1 redaction:** the user's *query text* only — the part most likely to
-  hold a secret. Grounding context, tool outputs, and history on escalated queries
-  are **not yet** redacted (tracked follow-up). The remote agent's tools run
-  locally and can pull system data into the frontier conversation — closing that
-  is the next privacy increment.
+- **Scope of redaction (updated — `bv1`, done).** v1 redacted the *query text*
+  only, but `_run_remote` still shipped the grounding context and history too. Now,
+  on an escalated query, **only what the person reviewed leaves the device**: the
+  redacted query, plus whatever the assistant looks up here via tools. The
+  pre-assembled grounding context (`system_extra`) and prior turns (`history`) are
+  **dropped** — they were never shown in the consent prompt, so sending them (even
+  scrubbed) would break the "exactly what I'd send" promise; the frontier re-derives
+  what it needs through tools instead. Tool results run *on this machine* and can
+  pull a failed unit's journal, tokens, or paths into the cloud conversation, so
+  **each is deterministically scrubbed as it returns** — a reduction of known
+  secret *shapes* (keys, tokens, emails, IPs, home paths), not a guarantee against
+  every possible identifier, and the confirm now **discloses** that on-device
+  lookups happen and are stripped. Deterministic `scrub` (not the model rewrite) is
+  used for tool output: reliable, no per-call model round-trip. *Gated to escalated
+  queries by design:* a remote-**default** machine (the user opted into cloud) sends
+  real context and tool output so the frontier can actually help — there is no
+  escalation promise to keep there.
 - **Known tradeoff — fidelity vs privacy on *changes*.** Redaction can strip
   values that are part of an actionable request (an IP, a path), so an escalated
   *change* reaches the frontier as a slightly lossier request. We accept this: the

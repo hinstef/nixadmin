@@ -78,6 +78,12 @@ class Store(Protocol):
         kind: str | None = None, since: float | None = None,
     ) -> list[Event]: ...
 
+    async def earliest(self) -> float | None:
+        """Timestamp of the oldest event, or ``None`` if the store is empty. Cheap
+        (``MIN(ts)``, indexed) — used as the ledger's honest streak floor when a
+        capped ``recent`` scan can't see back far enough."""
+        ...
+
 
 class NullStore:
     """No-op backend. Appends vanish; ``recent`` is always empty."""
@@ -93,6 +99,9 @@ class NullStore:
         kind: str | None = None, since: float | None = None,
     ) -> list[Event]:
         return []
+
+    async def earliest(self) -> float | None:
+        return None
 
 
 class EventStore:
@@ -170,6 +179,17 @@ class EventStore:
             params,
         ).fetchall()
         return [self._row(r) for r in rows]
+
+    async def earliest(self) -> float | None:
+        try:
+            return await asyncio.to_thread(self._earliest)
+        except sqlite3.Error as e:
+            log.warning("event earliest failed", error=str(e))
+            return None
+
+    def _earliest(self) -> float | None:
+        row = self._db.execute("SELECT MIN(ts) AS m FROM events").fetchone()
+        return None if row is None or row["m"] is None else float(row["m"])
 
     @staticmethod
     def _row(r: sqlite3.Row) -> Event:

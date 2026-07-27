@@ -24,9 +24,10 @@ from nixadmin.errors import ProtocolError
 
 #: Protocol version, sent in :class:`Hello`. On mismatch a client warns and
 #: proceeds (best-effort) rather than disconnecting — see the spec.
-#: v2 added the timeline messages (``get_timeline`` / ``timeline``); they are
-#: additive, so an older client simply never asks for them.
-VERSION = 2
+#: v2 added the timeline messages (``get_timeline`` / ``timeline``); v3 added the
+#: ledger messages (``get_ledger`` / ``ledger``). Both are additive, so an older
+#: client simply never asks for them.
+VERSION = 3
 
 
 # --------------------------------------------------------------------------- #
@@ -241,6 +242,25 @@ class Timeline:
     TYPE: ClassVar[str] = "timeline"
 
 
+@dataclass
+class GetLedger:
+    """Client → daemon: request the kept-well ledger (the looked-after-itself
+    streak + a quiet tally). Read-only, derived from the event store."""
+
+    id: str
+    TYPE: ClassVar[str] = "get_ledger"
+
+
+@dataclass
+class Ledger:
+    """Daemon → client: the ledger summary as a flat dict (see nixadmin.ledger.
+    Ledger for the fields — streak_days, healthy_now, headline, tally, …)."""
+
+    id: str
+    data: dict[str, object]
+    TYPE: ClassVar[str] = "ledger"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
@@ -249,6 +269,7 @@ Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
     | Confirm | Input | Ready | Event | ListFailures | Failures
     | RestartUnit | ExplainUnit | UnitJournal | Journal | GetTimeline | Timeline
+    | GetLedger | Ledger
 )
 
 _REGISTRY: dict[str, type] = {
@@ -257,6 +278,7 @@ _REGISTRY: dict[str, type] = {
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
         Confirm, Input, Ready, Event, ListFailures, Failures,
         RestartUnit, ExplainUnit, UnitJournal, Journal, GetTimeline, Timeline,
+        GetLedger, Ledger,
     )
 }
 

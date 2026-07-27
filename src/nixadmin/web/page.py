@@ -50,6 +50,13 @@ _PAGE = """<!DOCTYPE html>
   .explain { margin-top: 10px; padding: 10px 12px; border-left: 3px solid #f39c12; background: #1f2129; border-radius: 4px; font-size: 14px; white-space: pre-wrap; }
   .muted { color: #6b7280; }
   .allclear { color: #9aa0ac; padding: 8px 0; }
+  /* kept-well ledger — the calm glance line; pull-only, never a button */
+  #kept-sec { margin-top: 4px; }
+  .kept { border: 1px solid #23312a; border-radius: 10px; padding: 14px 18px; background: #172019; }
+  .kept.attention { border-color: #4a3a26; background: #1f1a12; }
+  .kept-head { font-size: 17px; font-weight: 600; color: #cfe9d6; }
+  .kept.attention .kept-head { color: #e6cfa0; }
+  .kept-tally { margin-top: 4px; font-size: 13px; color: #8a9a8f; }
   /* invoke bar */
   #ask { display: flex; gap: 8px; margin: 4px 0 6px; }
   #ask input { flex: 1; font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #333844; background: #1b1e25; color: #e6e8ee; }
@@ -83,6 +90,9 @@ _PAGE = """<!DOCTYPE html>
   <div id="status"><span class="dot down"></span>connecting…</div>
 </header>
 <main>
+  <section id="kept-sec" hidden>
+    <div class="kept" id="kept"></div>
+  </section>
   <section>
     <form id="ask" autocomplete="off">
       <input id="ask-input" type="text" placeholder="What would you like? (e.g. install spotify)" aria-label="Ask nixadmin">
@@ -174,6 +184,23 @@ async function runExplain(unit, scope, out, btn) {
   out.textContent = ""; out.appendChild(el("div", "explain", r.text || "(no explanation)"));
   if (btn) { btn.disabled = false; btn.textContent = "Explain"; }
   loadTimeline();  // the explanation is now persisted — reflect it below
+}
+
+// ---- Kept-well ledger: the calm glance line --------------------------------
+async function loadLedger() {
+  let l;
+  try { l = (await (await api("/api/ledger")).json()).ledger; }
+  catch (e) { l = null; }
+  const sec = document.getElementById("kept-sec");
+  const box = document.getElementById("kept");
+  if (!l || l.since_ts == null) { sec.hidden = true; return; }  // nothing to say yet
+  box.className = "kept" + (l.healthy_now ? "" : " attention");
+  box.textContent = "";
+  box.appendChild(el("div", "kept-head", l.headline || ""));
+  if (l.tally && l.tally.length) {
+    box.appendChild(el("div", "kept-tally", "Quietly: " + l.tally.join(" \\u00b7 ")));
+  }
+  sec.hidden = false;
 }
 
 // ---- Timeline: persisted event history -------------------------------------
@@ -298,6 +325,7 @@ document.addEventListener("keydown", ev => {
 // ---- boot ------------------------------------------------------------------
 async function boot() {
   await refresh();
+  await loadLedger();
   await loadTimeline();
   // Tray deep-link: run + show the explanation right here (persisted, not a bubble).
   if (PARAMS.get("explain")) {
@@ -315,6 +343,7 @@ async function boot() {
 boot();
 setInterval(refresh, 15000);
 setInterval(loadTimeline, 20000);
+setInterval(loadLedger, 30000);
 </script>
 </body>
 </html>

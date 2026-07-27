@@ -194,8 +194,34 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   runs and the redacted payload is shown **verbatim in the confirm**. Accepting
   with no remote configured gives an honest "not set up yet" (`b4h` flips it live,
   no UI change). See [`adr/0004-escalation-and-redaction.md`](adr/0004-escalation-and-redaction.md).
-  *v1 redacts the query text; grounding/tool-output/history redaction is a tracked
-  follow-up.*
+- **Escalation sends only the reviewed payload — built (`bv1`, 2026-07-26).**
+  Redaction no longer stops at the query text. On an escalated query, `_run_remote`
+  now sends **only what the person reviewed**: the redacted query, plus tool
+  results the assistant pulls on-device (each deterministically scrubbed as it
+  returns — the frontier's tools run locally and could otherwise leak a failed
+  unit's journal / tokens / paths). The un-reviewed grounding context and prior
+  turns are **dropped** entirely (sending them, even scrubbed, would break the
+  "exactly what I'd send" promise); the confirm discloses that on-device lookups
+  happen and are stripped. Gated to *escalated* queries (a remote-default machine
+  opted into cloud). Tool dispatch split into `_call_tool` so the scrub lives in
+  one place.
+
+### Kept-well ledger — silence made legible (2026-07-26, `9ep`)
+
+- **Pure fold (`nixadmin.ledger`).** `summarize(events, now, current_failures)`
+  turns the event store into a `Ledger`: the **looked-after-itself streak** (days
+  since the machine last had to hand a problem back — an autofix `inform`, a
+  still-failing restart, or a *person*-triggered restart) plus a **quiet tally** of
+  autonomous upkeep (autofix restarts that stuck) over a 30-day window. Only
+  self-directed actions count — a user-requested install is not the machine looking
+  after itself, so installs are excluded. Honest by construction: a live failure
+  count > 0 zeroes the streak ("needs a hand"), never a flattering number; the
+  streak floor comes from the store's true `MIN(ts)` so a capped scan can't
+  understate a long streak. No I/O; exhaustively unit-tested.
+- **Wired end-to-end.** New `get_ledger`/`ledger` wire messages (protocol v3),
+  daemon handler `_get_ledger`, `dclient.ledger()`, `GET /api/ledger`, and one calm
+  glance line at the top of the web hub — pull-only, no button (per `ux.md`'s
+  Clippy line). Lock-screen glance-moment stays the ideal surface (toolkit work).
 
 ### Diagnosis findings to fix (from live testing 2026-06-26)
 - [x] **Cold-start false all-clear (SAFETY).** *(done 2026-06-27)* The model's

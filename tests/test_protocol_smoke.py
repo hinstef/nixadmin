@@ -43,6 +43,13 @@ def test_roundtrip_every_message_type():
              "meta": {"model": "qwen2.5:3b"}},
         ]),
         p.Timeline(id="q2", events=[]),
+        p.GetLedger(id="q1"),
+        p.Ledger(id="q1", data={
+            "streak_days": 23, "healthy_now": True, "since_ts": 1.0,
+            "headline": "Looked after itself for 23 days.",
+            "tally": ["quietly restarted 2 services"],
+        }),
+        p.Ledger(id="q2", data={}),
         p.Failures(id="q1", units=[
             {"unit": "cups.service", "scope": "system", "description": "CUPS printing"},
             {"unit": "nixadmin-backup.service", "scope": "user", "description": "Nightly backup"},

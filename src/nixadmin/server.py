@@ -15,10 +15,11 @@ import asyncio
 import contextlib
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from nixadmin import actions, autofix, redact, remediation
+from nixadmin import actions, autofix, ledger, redact, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -232,6 +233,8 @@ class Daemon:
             asyncio.create_task(self._unit_journal(conn, msg))
         elif isinstance(msg, wire.GetTimeline):
             asyncio.create_task(self._get_timeline(conn, msg))
+        elif isinstance(msg, wire.GetLedger):
+            asyncio.create_task(self._get_ledger(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from.
@@ -263,6 +266,33 @@ class Daemon:
         """Read-only: the persisted event timeline for the web hub."""
         events = await self.store.recent(msg.limit, unit=msg.unit)
         await conn.send(wire.Timeline(id=msg.id, events=events))
+
+    async def _get_ledger(self, conn: ClientConn, msg: wire.GetLedger) -> None:
+        """Read-only: the kept-well ledger — the looked-after-itself streak plus a
+        quiet tally, folded from the event store. Honest by construction: the live
+        failed-unit count is passed in, so anything broken *now* zeroes the streak
+        rather than flattering it.
+
+        The relevant kinds are queried *separately* so a flood of benign events
+        (journals, monitor pings) on a busy machine can't push the rare
+        attention/upkeep events out of a single capped scan; the store's true
+        ``MIN(ts)`` supplies the streak floor so a truncated scan can't understate
+        a long streak. All queries run concurrently — they're independent."""
+        now = time.time()
+        window_start = now - ledger.DEFAULT_WINDOW_DAYS * ledger.DAY_S
+        limit = ledger.LEDGER_SCAN_LIMIT
+        autofix_evs, restart_evs, cleared_evs, earliest, failures = await asyncio.gather(
+            self.store.recent(limit, kind="autofix"),          # inform/still_failing + healthy
+            self.store.recent(limit, kind="restart"),           # manual (person-triggered) fixes
+            self.store.recent(limit, kind="failure_cleared", since=window_start),
+            self.store.earliest(),
+            remediation.failed_units(),                          # live, authoritative
+        )
+        summary = ledger.summarize(
+            [*autofix_evs, *restart_evs, *cleared_evs],
+            now=now, current_failures=len(failures), earliest_ts=earliest,
+        )
+        await conn.send(wire.Ledger(id=msg.id, data=asdict(summary)))
 
     async def _restart_unit(self, conn: ClientConn, msg: wire.RestartUnit) -> None:
         """A tray fix-it: restart one already-resolved, currently-failed unit.
@@ -524,7 +554,10 @@ class Daemon:
         prompt = (
             f"{reason}\n\nI can ask the fuller (cloud) assistant, but that means "
             "this leaves your device. Here's exactly what I'd send"
-            f"{removed}:\n\n“{redaction.redacted}”\n\nSend it?"
+            f"{removed}:\n\n“{redaction.redacted}”\n\n"
+            "To answer, it may look things up on your device; anything sensitive is "
+            "removed from those too, and nothing else about your machine is sent. "
+            "Send it?"
         )
         if not await conn.confirm(query.id, prompt):
             await self._stay_local(
@@ -617,24 +650,31 @@ class Daemon:
     ) -> None:
         """Run the frontier chain. ``text`` overrides ``query.text`` — used to send
         the **redacted** payload on an escalated query, so what we record and what
-        we send both reflect what actually left the device (never the raw input)."""
+        we send both reflect what actually left the device (never the raw input).
+
+        On an escalated query, what leaves the device is only what the person
+        reviewed: the redacted query, plus whatever the assistant looks up here via
+        tools. The pre-assembled grounding context and prior turns are **not** sent
+        — they were never shown in the consent prompt, so shipping them (even
+        scrubbed) would break the "exactly what I'd send" promise. Tool results run
+        **on this machine** and can pull a failed unit's journal, tokens, or paths
+        into the cloud conversation, so each is deterministically scrubbed as it
+        returns (a reduction of known secret shapes, disclosed in the confirm — not
+        a guarantee against every possible identifier) (bv1)."""
         sent = text if text is not None else query.text
+        escalated = text is not None
         tools = remote_llm.build_tools(self.modules)
-        history = await self.history.recent(query.session, 20)
-        system_extra = "\n\n" + (await self.context.assemble())
+        if escalated:
+            history: list[dict[str, str]] = []
+            system_extra = ""
+        else:
+            history = await self.history.recent(query.session, 20)
+            system_extra = "\n\n" + (await self.context.assemble())
         state = self.sessions.state(query.session)
 
         async def run_tool(name: str, args: dict[str, Any]) -> str:
-            if name == "nixadmin_rebuild":
-                return await self.safety.rebuild(
-                    args.get("action", ""), state=state,
-                    confirm=lambda text: conn.confirm(query.id, text),
-                )
-            cmd = self._tool_cmds.get(name)
-            if cmd is None:
-                return f"(unknown tool: {name})"
-            from nixadmin.prefetch import _run_blocking
-            return await asyncio.to_thread(_run_blocking, cmd, 15)
+            result = await self._call_tool(name, args, conn, query, state)
+            return redact.scrub(result).text if escalated else result
 
         answer = ""
         async for delta in remote_llm.run(
@@ -650,6 +690,25 @@ class Daemon:
                                 meta={"answer": answer, "chain": "remote",
                                       "escalated": text is not None})
         await conn.send(wire.Done(id=query.id, chain="remote", model=self.cfg.remote_model))
+
+    async def _call_tool(
+        self, name: str, args: dict[str, Any], conn: ClientConn,
+        query: wire.Query, state: Any,
+    ) -> str:
+        """Execute one frontier-requested tool locally, returning its raw output.
+
+        The escalation redaction wraps this in ``_run_remote`` — keep this focused
+        on dispatch so the scrub lives in exactly one place."""
+        if name == "nixadmin_rebuild":
+            return await self.safety.rebuild(
+                args.get("action", ""), state=state,
+                confirm=lambda text: conn.confirm(query.id, text),
+            )
+        cmd = self._tool_cmds.get(name)
+        if cmd is None:
+            return f"(unknown tool: {name})"
+        from nixadmin.prefetch import _run_blocking
+        return await asyncio.to_thread(_run_blocking, cmd, 15)
 
     # ---- readiness + broadcast ------------------------------------------- #
 

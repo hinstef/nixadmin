@@ -143,6 +143,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 100
             self._json(200, {"events": self.app.dclient.timeline(limit, tl_unit)})
+        elif parsed.path == "/api/ledger":
+            if not self._guard(qs, mutation=False):
+                return
+            self._json(200, {"ledger": self.app.dclient.ledger()})
         elif parsed.path == "/api/stream":
             self._stream(qs)
         else:

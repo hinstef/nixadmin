@@ -93,6 +93,14 @@ going.
 
 ## Silence accounted for — the "kept-well" ledger
 
+**BUILT (2026-07-26, `9ep`)** — a first cut. `nixadmin.ledger` folds the event
+store into a streak + quiet tally (pure, tested); the daemon serves it over the
+`get_ledger` wire message and the web hub renders one calm line at the top (pull
+only, no button). Honest by construction: the *live* failed-unit count is passed
+in, so anything broken right now reads "needs a hand," never a flattering streak.
+The lock-screen / login glance-moment is still the ideal surface (toolkit work,
+deferred); the web line is the shippable version of the same pull-only idea.
+
 Silence must not curdle into **opacity**: a system you never see act is one you
 stop trusting and eventually forget. Borrowed from ADAS, where the goal was also
 zero interventions, yet the system *unintrusively surfaced its track record*

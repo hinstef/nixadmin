@@ -77,6 +77,12 @@ class Daemon:
         msg, _ = self._roundtrip(req, terminal=(wire.Timeline,))
         return msg.events if isinstance(msg, wire.Timeline) else []
 
+    def ledger(self) -> dict[str, object] | None:
+        """The kept-well ledger summary, or ``None`` if the daemon is unreachable."""
+        msg, _ = self._roundtrip(
+            {"type": "get_ledger", "id": _id()}, terminal=(wire.Ledger,))
+        return msg.data if isinstance(msg, wire.Ledger) else None
+
     def restart(self, unit: str, scope: str) -> str:
         msg, deltas = self._roundtrip(
             {"type": "restart_unit", "id": _id(), "unit": unit, "scope": scope},

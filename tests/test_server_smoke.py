@@ -204,6 +204,128 @@ async def test_offer_escalation_without_remote_never_prompts(daemon_socket):
     await daemon.aclose()
 
 
+async def test_escalated_remote_sends_only_reviewed_query_and_scrubbed_tools(
+    daemon_socket, monkeypatch
+):
+    """On an escalated query, only what the person reviewed leaves the device: the
+    redacted query, plus tool results the assistant pulls here (deterministically
+    scrubbed). The un-reviewed grounding context and prior turns are NOT sent —
+    shipping them (even scrubbed) would break the 'exactly what I'd send' promise
+    (bv1)."""
+    daemon = await _escalation_daemon(daemon_socket, remote_ready=True)
+
+    class FakeCtx:
+        async def assemble(self):
+            return "grounding for user@example.com at 10.0.0.5"
+
+    class FakeHist:
+        async def recent(self, session, n):
+            return [{"role": "user", "content": "my key sk-ABCDEFGHIJKLMNOP1234"}]
+        async def append(self, *a, **k):
+            return None
+
+    async def fake_call_tool(name, args, conn, query, state):  # noqa: ANN001
+        return "journal: token ghp_ABCDEFGHIJKLMNOP1234 at /home/alice/x"
+
+    daemon.context = FakeCtx()  # type: ignore[assignment]
+    daemon.history = FakeHist()  # type: ignore[assignment]
+    daemon._call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    captured: dict[str, object] = {}
+
+    async def fake_run(sent, *, model, api_base, tools, run_tool, history, system_extra):  # noqa: ANN001
+        captured["sent"] = sent
+        captured["system_extra"] = system_extra
+        captured["history"] = history
+        captured["tool"] = await run_tool("some_tool", {})
+        if False:  # make this an async generator that yields nothing
+            yield ""
+
+    monkeypatch.setattr("nixadmin.server.remote_llm.run", fake_run)
+    conn = FakeConn(confirm_answer=True)
+    q = wire.Query(id="q1", text="ignored — escalated payload is passed explicitly")
+    await daemon._run_remote(conn, q, text="REDACTED[send this]")
+
+    # Only the reviewed (redacted) query goes; no grounding context, no prior turns.
+    assert captured["sent"] == "REDACTED[send this]"
+    assert captured["system_extra"] == ""
+    assert captured["history"] == []
+    # Tool output that ran on-device is scrubbed before it crosses the boundary.
+    tool = captured["tool"]
+    assert "ghp_ABCDEFGHIJKLMNOP1234" not in tool and "[token]" in tool
+    assert "/home/alice" not in tool and "/home/[user]" in tool
+    await daemon.aclose()
+
+
+async def test_unescalated_remote_sends_context_and_tools_verbatim(daemon_socket, monkeypatch):
+    """The scrub is gated to *escalated* queries. A remote-by-default query (no
+    escalation promise) sends real context/tool output so the frontier can help —
+    the opt-in-to-cloud case, out of bv1's scope."""
+    daemon = await _escalation_daemon(daemon_socket, remote_ready=True)
+
+    class FakeCtx:
+        async def assemble(self):
+            return "grounding for user@example.com"
+
+    class FakeHist:
+        async def recent(self, session, n):
+            return []
+        async def append(self, *a, **k):
+            return None
+
+    async def fake_call_tool(name, args, conn, query, state):  # noqa: ANN001
+        return "token ghp_ABCDEFGHIJKLMNOP1234"
+
+    daemon.context = FakeCtx()  # type: ignore[assignment]
+    daemon.history = FakeHist()  # type: ignore[assignment]
+    daemon._call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    captured: dict[str, object] = {}
+
+    async def fake_run(sent, *, model, api_base, tools, run_tool, history, system_extra):  # noqa: ANN001
+        captured["system_extra"] = system_extra
+        captured["tool"] = await run_tool("some_tool", {})
+        if False:
+            yield ""
+
+    monkeypatch.setattr("nixadmin.server.remote_llm.run", fake_run)
+    conn = FakeConn(confirm_answer=True)
+    # text=None → not escalated
+    await daemon._run_remote(conn, wire.Query(id="q1", text="what's up?"))
+    assert "user@example.com" in captured["system_extra"]
+    assert "ghp_ABCDEFGHIJKLMNOP1234" in captured["tool"]
+    await daemon.aclose()
+
+
+async def test_get_ledger_over_socket(daemon_socket, tmp_path, monkeypatch):
+    """A client reads the kept-well ledger back over the wire; a silent self-heal
+    on record shows up in the quiet tally, and nothing failing → healthy."""
+    async def no_failures():
+        return []
+    monkeypatch.setattr("nixadmin.server.remediation.failed_units", no_failures)
+
+    cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
+    daemon = Daemon(cfg)
+    await daemon.store.append("autofix", unit="a.service", scope="user",
+                              text="restarted a — healthy again",
+                              meta={"action": "restart", "outcome": "healthy"})
+    server_task = asyncio.create_task(daemon.run())
+    await asyncio.sleep(0.2)
+    try:
+        reader, writer = await asyncio.open_unix_connection(daemon_socket)
+        await _read_until(reader, "hello")
+        writer.write(wire.encode(wire.GetLedger(id="l1")).encode())
+        await writer.drain()
+        msg = await _read_until(reader, "ledger")
+        assert isinstance(msg, wire.Ledger)
+        assert msg.data["healthy_now"] is True
+        assert "quietly restarted 1 service" in msg.data["tally"]
+        writer.close()
+    finally:
+        server_task.cancel()
+        await daemon.aclose()
+
+
 async def test_autofix_unit_restarts_and_records_healthy(daemon_socket, tmp_path, monkeypatch):
     cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
     daemon = Daemon(cfg)
