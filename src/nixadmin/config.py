@@ -52,6 +52,11 @@ class Config:
     state_dir: str = field(default_factory=lambda: _default_state_dir())
     socket_path: str = field(default_factory=_default_socket)
 
+    # Autofix: silently restart failed units (act/ask matrix — see nixadmin.autofix).
+    autofix: bool = True
+    autofix_system: bool = True     # also auto-restart system units (via root helper)
+    autofix_max_attempts: int = 1   # restarts per unit before we stop and inform
+
     log_format: Literal["json", "console"] = "json"
     log_level: str = "INFO"
 
@@ -87,11 +92,24 @@ class Config:
         def get(key: str, default: str) -> str:
             return e.get(f"NIXADMIN_{key}", default)
 
+        def flag(key: str, default: str) -> bool:
+            return get(key, default).strip().lower() not in ("0", "false", "no", "off", "")
+
         default_chain = get("CHAIN", "remote")
         if default_chain not in ("local", "remote"):
             raise ConfigError(f"NIXADMIN_CHAIN must be 'local' or 'remote', got {default_chain!r}")
 
         remote_base = e.get("NIXADMIN_REMOTE_BASE") or None
+
+        raw_attempts = get("AUTOFIX_MAX_ATTEMPTS", "1")
+        try:
+            # Clamp to >= 1: 0 would make the loop guard fire immediately and
+            # silently disable every restart.
+            max_attempts = max(1, int(raw_attempts))
+        except ValueError as exc:
+            raise ConfigError(
+                f"NIXADMIN_AUTOFIX_MAX_ATTEMPTS must be an integer, got {raw_attempts!r}"
+            ) from exc
 
         return cls(
             flake_dir=get("FLAKE_DIR", ""),
@@ -104,6 +122,9 @@ class Config:
             history=get("HISTORY", "null"),
             events=get("EVENTS", "sqlite"),
             state_dir=get("STATE_DIR", _default_state_dir()),
+            autofix=flag("AUTOFIX", "1"),
+            autofix_system=flag("AUTOFIX_SYSTEM", "1"),
+            autofix_max_attempts=max_attempts,
             socket_path=get("SOCKET", _default_socket()),
             log_format=get("LOG_FORMAT", "json"),  # type: ignore[arg-type]
             log_level=get("LOG_LEVEL", "INFO"),

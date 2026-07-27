@@ -14,10 +14,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from pathlib import Path
 from typing import Any, cast
 
-from nixadmin import actions, redact, remediation
+from nixadmin import actions, autofix, redact, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -38,6 +39,10 @@ log = logmod.get_logger(__name__)
 
 HELPER_SOCKET = "/run/nixadmin-helper.sock"
 
+# How often autofix polls for failed units. Poll-driven so it catches user-scope
+# failures (the services monitor is system-bus only) and observes recovery.
+AUTOFIX_POLL_INTERVAL = 15.0
+
 # Friendly names for the redaction placeholders, so the escalation confirm can say
 # *what kind* of thing was stripped without ever echoing the secret itself.
 _REMOVED_NAMES = {
@@ -46,6 +51,11 @@ _REMOVED_NAMES = {
     "[slack-token]": "Slack token", "[secret]": "secret",
     "/home/[user]": "home path", "/Users/[user]": "home path",
 }
+
+
+async def _silent_status(_text: str) -> None:
+    """A no-op status sink for autofix — there's no client turn to narrate to."""
+    return None
 
 
 def _summarize_removed(removed: list[str]) -> str:
@@ -109,6 +119,15 @@ class Daemon:
         # Last-seen failed units, so we can log failure_observed / failure_cleared
         # on transitions rather than re-logging the same failure every poll.
         self._seen_failures: set[tuple[str, str]] = set()
+        # Autofix: policy + per-episode dedup (units acted on in their current
+        # failure episode) + a lock so overlapping failure events serialise.
+        self.autofix_cfg = autofix.AutofixConfig(
+            enable=config.autofix, system=config.autofix_system,
+            max_attempts=config.autofix_max_attempts,
+        )
+        self._autofix_seen: set[tuple[str, str]] = set()
+        self._autofix_lock = asyncio.Lock()
+        self._autofix_task: asyncio.Task[None] | None = None
         self.sessions = SessionRegistry()
         self.safety = SafetyGate(HELPER_SOCKET)
         self.context = ContextCache([
@@ -137,11 +156,24 @@ class Daemon:
         log.info("listening", socket=sock, default_chain=self.cfg.default_chain)
 
         await self.monitors.start()
+        # Seed the autofix episode-set with units already failed at startup, so we
+        # act on failures that *happen* from now on — not a boot-time bulk restart.
+        # Seeded before the poll loop starts, so the first tick can't treat a
+        # pre-existing failure as new.
+        if self.autofix_cfg.enable:
+            self._autofix_seen = {
+                (u["unit"], u["scope"]) for u in await remediation.failed_units()
+            }
+            self._autofix_task = asyncio.create_task(self._autofix_loop())
         asyncio.create_task(self._readiness_loop())
         async with server:
             await server.serve_forever()
 
     async def aclose(self) -> None:
+        if self._autofix_task is not None:
+            self._autofix_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._autofix_task
         await self.monitors.aclose()
         close = getattr(self.store, "close", None)
         if callable(close):
@@ -246,16 +278,16 @@ class Daemon:
                 await conn.send(wire.Delta(id=msg.id, text=f"{msg.unit} isn't failing right now."))
                 await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
                 return
-            result = await remediation.restart_resolved(
+            outcome = await remediation.restart_resolved(
                 match["unit"], match["scope"],
                 status=lambda text: conn.send(wire.Status(id=msg.id, text=text)),
                 restart_system=self.safety.apply_restart,
             )
             await self.store.append(
                 "restart", unit=match["unit"], scope=match["scope"],
-                text=result, meta={"source": "tray"},
+                text=outcome.message, meta={"source": "tray", "ok": outcome.ok},
             )
-            await conn.send(wire.Delta(id=msg.id, text=result))
+            await conn.send(wire.Delta(id=msg.id, text=outcome.message))
             await conn.send(wire.Done(id=msg.id, chain="local", model=self.cfg.local_model))
         except NixadminError as e:
             await conn.send(wire.Error(id=msg.id, text=str(e)))
@@ -643,8 +675,84 @@ class Daemon:
     async def _broadcast(self, source: str, severity: str, text: str) -> None:
         await self.store.append("monitor_event", severity=severity, text=text,
                                 meta={"source": source})
-        msg = wire.Event(source=source, severity=severity, text=text)
-        await self._send_all(msg)
+        await self._send_event(source, severity, text)
+
+    async def _send_event(self, source: str, severity: str, text: str) -> None:
+        """Fan an Event out to connected clients (no store write of its own)."""
+        await self._send_all(wire.Event(source=source, severity=severity, text=text))
+
+    # ---- autofix ---------------------------------------------------------- #
+
+    async def _autofix_loop(self) -> None:
+        """Poll for failed units and act. Poll-driven (not purely event-driven) on
+        purpose: the ``services`` monitor only sees the *system* bus, so a poll of
+        ``failed_units()`` is what catches **user**-scope failures too, and it's
+        what observes *recovery* so a healed unit is re-armed for its next failure."""
+        while True:
+            await asyncio.sleep(AUTOFIX_POLL_INTERVAL)
+            try:
+                await self._run_autofix()
+            except Exception as e:  # noqa: BLE001 — a bad tick must not kill the loop
+                log.warning("autofix loop tick failed", error=str(e))
+
+    async def _run_autofix(self) -> None:
+        """Act on newly-failed units. One action per failure episode; the event
+        store's history is the cross-episode restart-loop guard."""
+        async with self._autofix_lock:
+            units = await remediation.failed_units()
+            failed = {(u["unit"], u["scope"]): u for u in units}
+            # A recovered unit's episode is over → forget it so a future failure is
+            # handled fresh.
+            self._autofix_seen &= set(failed)
+            for key, u in failed.items():
+                if key in self._autofix_seen:
+                    continue
+                self._autofix_seen.add(key)
+                try:
+                    await self._autofix_unit(u["unit"], u["scope"])
+                except NixadminError as e:
+                    log.warning("autofix failed", unit=u["unit"], error=str(e))
+
+    async def _autofix_unit(self, unit: str, scope: str) -> None:
+        since = time.time() - self.autofix_cfg.window_s
+        prior = await self.store.recent(50, unit=unit, kind="autofix", since=since)
+        attempts = sum(1 for e in prior if e.get("meta", {}).get("action") == "restart")
+        decision = autofix.decide(
+            scope=scope, prior_attempts=attempts, cfg=self.autofix_cfg
+        )
+        if decision == "skip":
+            return
+        if decision == "inform":
+            text = (
+                f"{unit} keeps failing and needs a real fix."
+                if attempts else f"{unit} stopped and needs attention."
+            )
+            await self.store.append("autofix", unit=unit, scope=scope,
+                                    severity="warning", text=text, meta={"action": "inform"})
+            await self._send_event("autofix", "warning", text)
+            return
+
+        # decision == "restart": act, verify, record. The outcome's ok/message come
+        # from restart_resolved's single post-restart check — consistent by
+        # construction (no second failed_units() snapshot that could disagree).
+        log.info("autofix restart", unit=unit, scope=scope, attempt=attempts + 1)
+        outcome = await remediation.restart_resolved(
+            unit, scope, status=_silent_status, restart_system=self.safety.apply_restart,
+        )
+        result = "healthy" if outcome.ok else "still_failing"
+        await self.store.append(
+            "autofix", unit=unit, scope=scope,
+            severity="info" if outcome.ok else "warning",
+            text=outcome.message,
+            meta={"action": "restart", "outcome": result, "attempt": attempts + 1},
+        )
+        if outcome.ok:
+            await self._send_event(
+                "autofix", "info", f"{unit} stopped, so I restarted it — it's healthy again.")
+        else:
+            await self._send_event(
+                "autofix", "warning",
+                f"{unit} stopped and a restart didn't fix it — it needs attention.")
 
     async def _broadcast_ready(self, chain: str) -> None:
         await self._send_all(wire.Ready(chain=chain))

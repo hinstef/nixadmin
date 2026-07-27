@@ -156,6 +156,25 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   persisted; all 4 events survived a daemon kill+restart and rendered via
   `/api/timeline`. This is the substrate the **autofix** engine (`e7q`) reads/writes.
 
+### Autofix engine — act on unit-failure events (2026-07-26)
+
+- **The P1, built.** Closes the loop `docs/ux.md` is built around: a failed systemd
+  unit is *already* seen (the `services` D-Bus `JobRemoved` monitor) — now the
+  daemon acts. On a failure event, `_run_autofix` handles each newly-failed unit
+  once per episode; a pure policy (`autofix.py::decide`) chooses **restart** (via
+  the existing `remediation.restart_resolved` — user directly, system via the root
+  helper), **inform**, or **skip**. It restarts, **verifies** (honest — a restart
+  that doesn't stick says so), and records an `autofix` event to the timeline.
+- **Restart-loop guard from the event store:** prior `autofix` restart events for
+  the unit within the hour are counted; past `maxAttempts` (default 1) it stops
+  restarting and informs ("keeps failing — needs a real fix") instead of looping.
+- **Both scopes auto-heal by default** (`services.nixadmin.autofix.{enable,system,
+  maxAttempts}`); system autonomy can be turned off. Pre-existing failures are
+  seeded at startup so boot isn't a bulk-restart — we act on failures that *happen*.
+- Deterministic (no LLM); reuses the remediation tier + safety gate (no new
+  privilege path). Delivery is via `Event` + the persisted Timeline (🤖); desktop
+  notifications + "want me to fix it?" offers stay 2b (`b43`).
+
 ### Invoke bar — talk to the agent from the web hub (2026-07-26)
 
 - **Web invoke bar + streaming transport — built.** The hub grew a single

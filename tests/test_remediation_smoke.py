@@ -119,7 +119,8 @@ async def test_restart_resolved_system_verifies_and_reports(monkeypatch):
         "cups.service", "system", status=_noop, restart_system=fake_restart_system,
     )
     assert called["unit"] == "cups.service"  # exact unit, privileged path
-    assert "healthy again" in out
+    assert out.ok is True
+    assert "healthy again" in out.message
 
 
 async def test_restart_resolved_still_failing_is_honest(monkeypatch):
@@ -133,8 +134,9 @@ async def test_restart_resolved_still_failing_is_honest(monkeypatch):
     out = await remediation.restart_resolved(
         "cups.service", "system", status=_noop, restart_system=lambda _u: _ok(),
     )
-    assert "still failing" in out
-    assert "disk quota exceeded" in out  # honest — shows the real reason, no fake "Done!"
+    assert out.ok is False
+    assert "still failing" in out.message
+    assert "disk quota exceeded" in out.message  # honest — the real reason, no fake "Done!"
 
 
 async def _ok():

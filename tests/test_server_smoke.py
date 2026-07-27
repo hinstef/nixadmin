@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from nixadmin import protocol as wire
-from nixadmin import redact
+from nixadmin import redact, remediation
 from nixadmin.config import Config
 from nixadmin.server import Daemon
 
@@ -201,6 +201,76 @@ async def test_offer_escalation_without_remote_never_prompts(daemon_socket):
     await daemon._offer_escalation(conn, q, [], reason="R", local_fallback=False)
     assert conn.confirms == []  # never prompted to send data nowhere
     assert "isn't set up on this machine" in conn.deltas()
+    await daemon.aclose()
+
+
+async def test_autofix_unit_restarts_and_records_healthy(daemon_socket, tmp_path, monkeypatch):
+    cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
+    daemon = Daemon(cfg)
+    calls: list[tuple[str, str]] = []
+
+    async def fake_restart(unit, scope, *, status, restart_system):  # noqa: ANN001
+        calls.append((unit, scope))
+        return remediation.RestartOutcome(True, f"Restarted {unit} — healthy again.")
+
+    monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+
+    await daemon._autofix_unit("foo.service", "user")
+    assert calls == [("foo.service", "user")]
+    evs = await daemon.store.recent(10, kind="autofix")
+    assert evs[0]["meta"]["action"] == "restart"
+    assert evs[0]["meta"]["outcome"] == "healthy"
+    await daemon.aclose()
+
+
+async def test_autofix_loop_guard_informs_without_restarting(daemon_socket, tmp_path, monkeypatch):
+    cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
+    daemon = Daemon(cfg)  # max_attempts defaults to 1
+    # One prior restart attempt already on record, within the window.
+    await daemon.store.append("autofix", unit="foo.service", scope="user",
+                              text="prior", meta={"action": "restart"})
+    restarted = False
+
+    async def fake_restart(*a, **k):
+        nonlocal restarted
+        restarted = True
+        return "x"
+
+    monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+    await daemon._autofix_unit("foo.service", "user")
+    assert restarted is False  # budget spent → don't loop
+    evs = await daemon.store.recent(10, kind="autofix")
+    assert evs[0]["meta"]["action"] == "inform"
+    await daemon.aclose()
+
+
+async def test_run_autofix_once_per_episode_and_rearms_on_recovery(
+    daemon_socket, tmp_path, monkeypatch
+):
+    cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
+    daemon = Daemon(cfg)
+    calls: list[str] = []
+
+    async def fake_restart(unit, scope, *, status, restart_system):  # noqa: ANN001
+        calls.append(unit)
+        return remediation.RestartOutcome(False, "restarted, still failing")
+
+    failing = [{"unit": "foo.service", "scope": "user", "description": "x"}]
+
+    async def fake_failed():
+        return failing
+
+    monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+    monkeypatch.setattr("nixadmin.server.remediation.failed_units", fake_failed)
+
+    await daemon._run_autofix()   # foo is new → act once
+    await daemon._run_autofix()   # same episode → no second action
+    assert calls == ["foo.service"]
+    assert ("foo.service", "user") in daemon._autofix_seen
+
+    failing.clear()               # unit recovered
+    await daemon._run_autofix()
+    assert ("foo.service", "user") not in daemon._autofix_seen  # episode forgotten
     await daemon.aclose()
 
 

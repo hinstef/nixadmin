@@ -90,6 +90,9 @@ let
     NIXADMIN_CHAIN = cfg.defaultChain;
     NIXADMIN_HISTORY = cfg.history;
     NIXADMIN_EVENTS = cfg.events;
+    NIXADMIN_AUTOFIX = if cfg.autofix.enable then "1" else "0";
+    NIXADMIN_AUTOFIX_SYSTEM = if cfg.autofix.system then "1" else "0";
+    NIXADMIN_AUTOFIX_MAX_ATTEMPTS = toString cfg.autofix.maxAttempts;
     NIXADMIN_LOG_FORMAT = cfg.logFormat;
     # Fetcher commands (nmcli, ping, lsblk, nixadmin-apps…) resolve via the system
     # profile; git + nix are needed by the action tier (worktree-validated edits).
@@ -191,6 +194,36 @@ in
         Directory for the daemon's persistent state (the event store). Empty (the
         default) lets the daemon derive it from the user's XDG_STATE_HOME, i.e.
         ~/.local/state/nixadmin.
+      '';
+    };
+
+    autofix.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Automatically restart failed systemd units (with a restart-loop guard and
+        honest verification), recording every action to the event timeline. A
+        failed unit is already broken, so a verified restart is the safe,
+        reversible "act, don't ask" case (see docs/ux.md).
+      '';
+    };
+
+    autofix.system = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Also auto-restart failed system-scope units (via the privileged helper),
+        not just user-session units. Disable to only auto-fix user units and merely
+        surface system failures.
+      '';
+    };
+
+    autofix.maxAttempts = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
+      description = ''
+        How many times autofix will restart a given unit within an hour before it
+        stops and instead reports that the unit needs a real fix (loop guard).
       '';
     };
 

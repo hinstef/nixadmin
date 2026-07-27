@@ -155,13 +155,13 @@ a screen.
 Two pieces fall directly out of "act, don't ask" — promote to beads issues when we
 start. Neither is being built yet.
 
-1. **Autofix engine (the 80%).** A systemd unit failure is *already* subscribed via
-   D-Bus (`monitors.py` → builtin `services` → `JobRemoved`/`failed`), but is only
-   **emitted as an event broadcast to connected clients** — with no client attached
-   it goes nowhere. We notice and do nothing. The work: apply the act/ask decision
-   matrix to those events — safe + reversible → auto-remediate (restart) with
-   undo-after; the rest → the one rare push. This connects the monitor layer to the
-   remediation tier we already have; the plumbing exists, the *policy* doesn't.
+1. **Autofix engine (the 80%). — BUILT (2026-07-26).** The act/ask matrix is now
+   applied to unit-failure events: safe/reversible → auto-restart + verify + record
+   (`autofix.py` policy + the daemon engine, `src/nixadmin/server.py`); a restart
+   that keeps not sticking → inform (the one push). Restart-loop guard reads the
+   event-store history. Both scopes by default; system autonomy is configurable.
+   Delivery is `Event` + the Timeline for now — desktop notifications and
+   model-phrased "want me to fix it?" offers remain 2b (see below / `b43`).
 2. **The 20% (liveness poll).** Non-unit process exits (the dock) emit no signal
    anywhere — detectable only by polling liveness. Already specced as the
    process-vanished detector in

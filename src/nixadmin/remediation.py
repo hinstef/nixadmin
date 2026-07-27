@@ -122,43 +122,55 @@ async def run(
         log.info("remediation", kind=rem.kind, unit=unit, scope=scope, outcome="cancelled")
         return "Cancelled — nothing changed."
 
-    return await restart_resolved(unit, scope, status=status, restart_system=restart_system)
+    return (await restart_resolved(unit, scope, status=status,
+                                   restart_system=restart_system)).message
+
+
+@dataclass(frozen=True, slots=True)
+class RestartOutcome:
+    """Result of a verified restart: ``ok`` is the single source of truth for
+    'did it stick', and ``message`` is the human-facing text derived from that same
+    check — so a caller never records a message and an outcome that disagree."""
+
+    ok: bool
+    message: str
 
 
 async def restart_resolved(
     unit: str, scope: str, *, status: StatusFn, restart_system: RestartFn | None = None,
-) -> str:
+) -> RestartOutcome:
     """Restart an *already-resolved* unit and verify — no matching, no confirm.
 
     The caller has decided which unit and scope: a query after its confirm, or the
     tray after a click (the click is the consent). System units go through the
     privileged helper; user units directly. The outcome is always **verified** and
-    reported honestly — a restart that didn't stick says so."""
+    reported honestly — a restart that didn't stick says so. Both the boolean and
+    the message come from the *same* post-restart check (no second snapshot)."""
     await status(f"Restarting {unit}…")
     try:
         if scope == "system":
             if restart_system is None:
-                return "I can't restart a system service in this context."
+                return RestartOutcome(False, "I can't restart a system service in this context.")
             await restart_system(unit)  # via the root helper; raises on failure
         else:
             await _run("systemctl", "--user", "restart", unit)
     except NixadminError as e:
         log.warning("remediation", kind="restart_unit", unit=unit, scope=scope,
                     outcome="failed", error=str(e))
-        return f"I couldn't restart {unit} ({e})."
+        return RestartOutcome(False, f"I couldn't restart {unit} ({e}).")
 
     await asyncio.sleep(1.0)  # let it settle before checking
     if not await _is_failed(unit, scope):
         log.info("remediation", kind="restart_unit", unit=unit, scope=scope, outcome="restarted")
-        return f"Restarted {unit} — it's healthy again."
+        return RestartOutcome(True, f"Restarted {unit} — it's healthy again.")
 
     # Restart didn't help — be honest and show the real reason rather than claim a fix.
     reason = await _unit_tail(unit, scope)
     log.warning("remediation", kind="restart_unit", unit=unit, scope=scope, outcome="still_failing")
-    return (
+    return RestartOutcome(False, (
         f"I restarted {unit}, but it's still failing — this needs a real fix, "
         f"not a restart:\n{reason}"
-    )
+    ))
 
 
 async def unit_journal(unit: str, scope: str) -> str:
