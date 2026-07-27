@@ -40,7 +40,8 @@ Event = dict[str, Any]
 #: writes today.
 KINDS = frozenset({
     "failure_observed", "failure_cleared", "explanation",
-    "restart", "journal_snapshot", "monitor_event", "autofix",
+    "restart", "journal_snapshot", "monitor_event",
+    "ask", "action", "autofix",
 })
 
 _SCHEMA = """

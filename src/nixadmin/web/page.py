@@ -50,6 +50,19 @@ _PAGE = """<!DOCTYPE html>
   .explain { margin-top: 10px; padding: 10px 12px; border-left: 3px solid #f39c12; background: #1f2129; border-radius: 4px; font-size: 14px; white-space: pre-wrap; }
   .muted { color: #6b7280; }
   .allclear { color: #9aa0ac; padding: 8px 0; }
+  /* invoke bar */
+  #ask { display: flex; gap: 8px; margin: 4px 0 6px; }
+  #ask input { flex: 1; font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #333844; background: #1b1e25; color: #e6e8ee; }
+  #ask input:focus { outline: none; border-color: #4b5566; background: #1e2229; }
+  #ask button { font: inherit; padding: 0 16px; border-radius: 8px; border: 1px solid #333844; background: #232733; color: #e6e8ee; cursor: pointer; }
+  #ask button:hover { background: #2b3040; }
+  .card { border: 1px solid #262a33; border-radius: 8px; padding: 12px 14px; margin: 8px 0 4px; background: #1b1e25; }
+  .card .q { font-size: 13px; color: #9aa0ac; margin-bottom: 6px; }
+  .card .answer { white-space: pre-wrap; word-break: break-word; }
+  .card .work { color: #8b93a3; font-size: 13px; }
+  .card .prompt { margin-top: 8px; white-space: pre-wrap; }
+  .card .choices { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card.failed { border-color: #b04b4b; }
   /* timeline */
   ol.tl { list-style: none; margin: 0; padding: 0; }
   li.ev { display: grid; grid-template-columns: 72px 22px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid #21252e; align-items: baseline; }
@@ -70,6 +83,13 @@ _PAGE = """<!DOCTYPE html>
   <div id="status"><span class="dot down"></span>connecting…</div>
 </header>
 <main>
+  <section>
+    <form id="ask" autocomplete="off">
+      <input id="ask-input" type="text" placeholder="What would you like? (e.g. install spotify)" aria-label="Ask nixadmin">
+      <button type="submit">Go</button>
+    </form>
+    <div id="invoke-result"></div>
+  </section>
   <section>
     <h2 class="sec">Now</h2>
     <div id="units"></div>
@@ -159,7 +179,8 @@ async function runExplain(unit, scope, out, btn) {
 // ---- Timeline: persisted event history -------------------------------------
 const ICONS = {
   failure_observed: "\\u26a0\\ufe0f", failure_cleared: "\\u2705", explanation: "\\ud83d\\udcac",
-  restart: "\\ud83d\\udd27", journal_snapshot: "\\ud83d\\udcc4", monitor_event: "\\ud83d\\udd14", autofix: "\\ud83e\\udd16",
+  restart: "\\ud83d\\udd27", journal_snapshot: "\\ud83d\\udcc4", monitor_event: "\\ud83d\\udd14",
+  ask: "\\ud83d\\udde8\\ufe0f", action: "\\ud83d\\udce6", autofix: "\\ud83e\\udd16",
 };
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
@@ -192,9 +213,87 @@ function eventRow(ev) {
   } else if (text) {
     body.appendChild(el("div", "ev-text", text));
   }
+  // For an invoke-bar exchange, show the answer under the question.
+  if (ev.kind === "ask" && ev.meta && ev.meta.answer) {
+    body.appendChild(el("div", "ev-text muted", ev.meta.answer));
+  }
   li.appendChild(body);
   return li;
 }
+
+// ---- invoke bar: talk to the agent ----------------------------------------
+const SESSION = "web-" + Math.random().toString(36).slice(2, 10);
+function newQid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function ctl(path, body) { return api(path, { method: "POST", body: JSON.stringify(body) }); }
+
+function ask(text) {
+  const box = document.getElementById("invoke-result");
+  box.textContent = "";                       // one ephemeral card, not a transcript
+  const card = el("div", "card");
+  card.appendChild(el("div", "q", text));
+  const work = el("div", "work", "Working\\u2026"); card.appendChild(work);
+  const answer = el("div", "answer"); card.appendChild(answer);
+  const extra = el("div"); card.appendChild(extra);
+  box.appendChild(card);
+
+  const qid = newQid();
+  let finished = false;
+  const url = "/api/stream?token=" + encodeURIComponent(TOKEN) +
+              "&qid=" + qid + "&session=" + SESSION +
+              "&text=" + encodeURIComponent(text);
+  const es = new EventSource(url);
+  const stop = () => { finished = true; es.close(); };
+
+  es.addEventListener("status", e => { work.textContent = JSON.parse(e.data).text; });
+  es.addEventListener("delta", e => { work.textContent = ""; answer.textContent += JSON.parse(e.data).text; });
+  es.addEventListener("confirm", e => {
+    work.textContent = "";
+    extra.textContent = "";
+    extra.appendChild(el("div", "prompt", JSON.parse(e.data).text));
+    const choices = el("div", "choices");
+    const no = el("button", null, "No"), yes = el("button", null, "Yes");
+    no.onclick = () => { choices.remove(); ctl("/api/respond", { qid: qid, confirmed: false }); };
+    yes.onclick = () => { choices.remove(); ctl("/api/respond", { qid: qid, confirmed: true }); };
+    choices.append(no, yes); extra.appendChild(choices);
+  });
+  es.addEventListener("input", e => {
+    work.textContent = "";
+    extra.textContent = "";
+    extra.appendChild(el("div", "prompt", JSON.parse(e.data).prompt));
+    const row = el("div", "choices");
+    const inp = el("input"); inp.type = "text";
+    const send = el("button", null, "Send");
+    const submit = () => { row.remove(); ctl("/api/respond", { qid: qid, value: inp.value }); };
+    send.onclick = submit;
+    inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); submit(); } });
+    row.append(inp, send); extra.appendChild(row); inp.focus();
+  });
+  es.addEventListener("done", () => { work.textContent = ""; stop(); loadTimeline(); });
+  es.addEventListener("failed", e => {
+    work.textContent = ""; card.classList.add("failed");
+    answer.textContent = (JSON.parse(e.data).text) || "Something went wrong.";
+    stop(); loadTimeline();
+  });
+  es.addEventListener("error", () => {          // native EventSource connection error
+    if (finished) return;                       // normal close after done/failed
+    work.textContent = ""; card.classList.add("failed");
+    if (!answer.textContent) answer.textContent = "Lost the connection to the assistant.";
+    es.close();
+  });
+}
+
+document.getElementById("ask").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const inp = document.getElementById("ask-input");
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = "";
+  ask(text);
+});
+document.addEventListener("keydown", ev => {
+  const inp = document.getElementById("ask-input");
+  if (ev.key === "/" && document.activeElement !== inp) { ev.preventDefault(); inp.focus(); }
+});
 
 // ---- boot ------------------------------------------------------------------
 async function boot() {

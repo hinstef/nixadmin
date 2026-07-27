@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
-from nixadmin import actions, remediation
+from nixadmin import actions, redact, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -37,6 +37,31 @@ from nixadmin.store import make_store
 log = logmod.get_logger(__name__)
 
 HELPER_SOCKET = "/run/nixadmin-helper.sock"
+
+# Friendly names for the redaction placeholders, so the escalation confirm can say
+# *what kind* of thing was stripped without ever echoing the secret itself.
+_REMOVED_NAMES = {
+    "[email]": "email", "[ip]": "IP address", "[api-key]": "API key",
+    "[token]": "token", "Bearer [token]": "token", "[aws-key]": "AWS key",
+    "[slack-token]": "Slack token", "[secret]": "secret",
+    "/home/[user]": "home path", "/Users/[user]": "home path",
+}
+
+
+def _summarize_removed(removed: list[str]) -> str:
+    """A clause for the escalation prompt naming what redaction removed."""
+    if not removed:
+        return ", with any personal details removed"
+    names: list[str] = []
+    for r in removed:
+        name = _REMOVED_NAMES.get(r, "detail")
+        if name not in names:
+            names.append(name)
+    if len(names) == 1:
+        joined = names[0]
+    else:
+        joined = ", ".join(names[:-1]) + " and " + names[-1]
+    return f", with your {joined} removed"
 
 
 class ClientConn:
@@ -358,8 +383,12 @@ class Daemon:
                 await conn.send(wire.Done(id=query.id, chain="local",
                                           model=self.cfg.local_model))
                 return
-            # Open-ended change → remote agent (or a plain limitation).
-            await self._handle_mutation(conn, query, desired, pinned, matched)
+            # Open-ended change → offer to escalate to the frontier (with consent
+            # and redaction). No local fallback — we genuinely can't make it here.
+            await self._offer_escalation(
+                conn, query, matched, local_fallback=False,
+                reason="That's a change I can't make on your device by myself.",
+            )
             return
 
         decision = resolve(
@@ -370,6 +399,18 @@ class Daemon:
         if chain is None:
             return
         if chain == "local":
+            # The local model judges its own competence: if it isn't confident it
+            # can answer this on-device, offer the frontier (never switch silently).
+            # Only worth the extra model call when there's actually a frontier to
+            # escalate to — otherwise every local read pays for a moot assessment.
+            if self.remote_ready and self.cfg.has_local and await local_llm.assess_escalation(
+                query.text, model=self.cfg.local_model, url=self.cfg.local_url
+            ):
+                await self._offer_escalation(
+                    conn, query, matched, local_fallback=True,
+                    reason="I'm not sure I can answer this well on your device alone.",
+                )
+                return
             await self._run_local(conn, query, matched)
         else:
             await self._run_remote(conn, query)
@@ -398,6 +439,8 @@ class Daemon:
             rollback=self.safety.apply_revert,
             suggest=self._suggest_package,
         )
+        await self.store.append("action", text=result,
+                                meta={"kind": action.kind, "request": query.text})
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
 
@@ -417,36 +460,60 @@ class Daemon:
         await conn.send(wire.Delta(id=query.id, text=result))
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
 
-    async def _handle_mutation(
-        self, conn: ClientConn, query: wire.Query, desired: Chain, pinned: bool,
-        matched: list[Module],
+    async def _redact_query(self, text: str) -> redact.Redaction:
+        """Redact before anything leaves the device. With a local model: scrub +
+        contextual rewrite. Without one (remote-only machine): the deterministic
+        scrub still runs — we never send raw text while claiming it was cleaned."""
+        if self.cfg.has_local:
+            return await redact.redact(text, model=self.cfg.local_model, url=self.cfg.local_url)
+        return redact.scrub_only(text)
+
+    async def _offer_escalation(
+        self, conn: ClientConn, query: wire.Query, matched: list[Module],
+        *, reason: str, local_fallback: bool,
     ) -> None:
+        """Never-silent escalation to the frontier: redact → show exactly what
+        would leave the device → confirm → send.
+
+        When there is no frontier to escalate to (remote not configured), don't
+        redact or prompt to send data nowhere — answer locally if we can, else say
+        plainly it can't be done here. On decline, same fallback.
+        """
         if not self.remote_ready:
-            # Not an error — a plain-language limitation. Making changes needs the
-            # remote assistant, which isn't configured on this machine.
-            await conn.send(wire.Delta(
-                id=query.id,
-                text="I can't make changes yet — that needs the full assistant, "
-                     "which isn't set up on this machine.",
-            ))
-            await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
+            await self._stay_local(
+                conn, query, matched, local_fallback,
+                change_msg="I can't make that change on my own yet — it needs the "
+                           "fuller assistant, which isn't set up on this machine.",
+            )
             return
-        # Escalate to remote. If the query was pinned local (privacy), the change
-        # still needs remote tools, so confirm that it will leave the device.
-        if desired == "local":
-            if pinned:
-                ok = await conn.confirm(
-                    query.id,
-                    "Making this change needs the full assistant and will leave this "
-                    "device. Proceed?",
-                )
-                if not ok:
-                    await conn.send(wire.Done(id=query.id))
-                    return
-            else:
-                await conn.send(wire.Status(
-                    id=query.id, text="This needs the full assistant — switching over."))
-        await self._run_remote(conn, query)
+
+        redaction = await self._redact_query(query.text)
+        removed = _summarize_removed(redaction.removed)
+        prompt = (
+            f"{reason}\n\nI can ask the fuller (cloud) assistant, but that means "
+            "this leaves your device. Here's exactly what I'd send"
+            f"{removed}:\n\n“{redaction.redacted}”\n\nSend it?"
+        )
+        if not await conn.confirm(query.id, prompt):
+            await self._stay_local(
+                conn, query, matched, local_fallback,
+                change_msg="Okay — keeping this on your device; I'll leave that "
+                           "change for now.",
+            )
+            return
+        await self._run_remote(conn, query, text=redaction.redacted)
+
+    async def _stay_local(
+        self, conn: ClientConn, query: wire.Query, matched: list[Module],
+        local_fallback: bool, *, change_msg: str,
+    ) -> None:
+        """Stay on-device: a best-effort local answer for a read, or ``change_msg``
+        (the honest limitation) for a change we won't/can't make here."""
+        if local_fallback and self.cfg.has_local:
+            await self._run_local(conn, query, matched)
+        else:
+            await conn.send(wire.Delta(id=query.id, text=change_msg))
+            await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
 
     async def _apply_decision(
         self, conn: ClientConn, query: wire.Query, decision: Decision
@@ -509,9 +576,17 @@ class Daemon:
 
         await self.history.append(query.session, "user", query.text)
         await self.history.append(query.session, "assistant", answer)
+        await self.store.append("ask", text=query.text,
+                                meta={"answer": answer, "chain": "local"})
         await conn.send(wire.Done(id=query.id, chain="local", model=self.cfg.local_model))
 
-    async def _run_remote(self, conn: ClientConn, query: wire.Query) -> None:
+    async def _run_remote(
+        self, conn: ClientConn, query: wire.Query, *, text: str | None = None
+    ) -> None:
+        """Run the frontier chain. ``text`` overrides ``query.text`` — used to send
+        the **redacted** payload on an escalated query, so what we record and what
+        we send both reflect what actually left the device (never the raw input)."""
+        sent = text if text is not None else query.text
         tools = remote_llm.build_tools(self.modules)
         history = await self.history.recent(query.session, 20)
         system_extra = "\n\n" + (await self.context.assemble())
@@ -531,14 +606,17 @@ class Daemon:
 
         answer = ""
         async for delta in remote_llm.run(
-            query.text, model=self.cfg.remote_model, api_base=self.cfg.remote_base,
+            sent, model=self.cfg.remote_model, api_base=self.cfg.remote_base,
             tools=tools, run_tool=run_tool, history=history, system_extra=system_extra,
         ):
             answer += delta
             await conn.send(wire.Delta(id=query.id, text=delta))
 
-        await self.history.append(query.session, "user", query.text)
+        await self.history.append(query.session, "user", sent)
         await self.history.append(query.session, "assistant", answer)
+        await self.store.append("ask", text=sent,
+                                meta={"answer": answer, "chain": "remote",
+                                      "escalated": text is not None})
         await conn.send(wire.Done(id=query.id, chain="remote", model=self.cfg.remote_model))
 
     # ---- readiness + broadcast ------------------------------------------- #

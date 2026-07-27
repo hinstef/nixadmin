@@ -156,6 +156,28 @@ switch`; future `nixadmin-rebuild switch` works normally now.
   persisted; all 4 events survived a daemon kill+restart and rendered via
   `/api/timeline`. This is the substrate the **autofix** engine (`e7q`) reads/writes.
 
+### Invoke bar — talk to the agent from the web hub (2026-07-26)
+
+- **Web invoke bar + streaming transport — built.** The hub grew a single
+  summonable input ("What would you like?", `/` focuses it) — an ephemeral
+  **task card**, not a resident chat panel (settles part of `nix-nixadmin-edx`
+  toward the invoke surface; keeps `ux.md`'s design-for-silence). The web server
+  gained a streaming transport it lacked: `web/session.py` holds a live daemon
+  socket across a mid-query confirm, exposed as **SSE** (`GET /api/stream`) + a
+  `POST /api/respond`/`/api/cancel` (CSP `connect-src 'self'` allows SSE; no
+  WebSocket). This is what lets a person **install apps from the web** — the
+  existing local action tier's diff-confirm now works in the browser. Invoke-bar
+  activity persists to the Timeline (`ask`/`action` events).
+- **Confirmed, redacted escalation — built.** The local model self-judges its
+  competence (`local.assess_escalation`, biased to stay local); when it isn't
+  confident it **offers** the frontier (never silent). Before anything leaves, a
+  two-pass **redaction** (`redact.py`: deterministic scrub + local-model rewrite)
+  runs and the redacted payload is shown **verbatim in the confirm**. Accepting
+  with no remote configured gives an honest "not set up yet" (`b4h` flips it live,
+  no UI change). See [`adr/0004-escalation-and-redaction.md`](adr/0004-escalation-and-redaction.md).
+  *v1 redacts the query text; grounding/tool-output/history redaction is a tracked
+  follow-up.*
+
 ### Diagnosis findings to fix (from live testing 2026-06-26)
 - [x] **Cold-start false all-clear (SAFETY).** *(done 2026-06-27)* The model's
   cold load is ~6s but classify's timeout was 2s → on a cold model classify timed

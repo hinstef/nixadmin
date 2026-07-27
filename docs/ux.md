@@ -129,13 +129,19 @@ genuinely actionable, and only for the can't-safely-auto-fix tail (most failures
 are auto-fixed silently per the section above). Everything else is pull. A trust
 surface that grows a button or pops itself up has become Clippy.
 
-## No home of its own (direction, not yet decided)
+## No home of its own (direction, partially settled)
 
 The most humane surface is the one that isn't there: rather than a new chat or
 palette the person must learn, fold intelligence into the surfaces they already
 use — the app that won't open grows a "fix it"; the troubled wifi icon offers the
 fix on click. Higher integration cost, but it is the moat. Open question against a
 single light **invoke** surface (summonable, ephemeral — not resident).
+
+> **Update (2026-07-26):** for the web hub we chose the **invoke surface** — a
+> single "What would you like?" bar whose results are ephemeral **task cards**, not
+> a resident chat transcript (a chat panel was explicitly rejected per "design for
+> silence"). It's on the web page for now, for rapid iteration; folding into native
+> surfaces stays the longer-term moat. Tracked in `nix-nixadmin-edx`.
 
 ## Two users
 

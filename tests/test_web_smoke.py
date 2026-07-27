@@ -6,8 +6,13 @@ checks that must never regress: token, Host, and Origin gating.
 
 from __future__ import annotations
 
+import pytest
+
+from nixadmin import protocol as wire
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
+from nixadmin.web.server import _to_sse
+from nixadmin.web.session import QuerySession, sse
 
 PORT = 7677
 
@@ -68,3 +73,76 @@ def test_daemon_client_graceful_when_socket_absent(tmp_path):
     assert d.list_failures() is None       # unreachable → None, not a crash
     assert d.journal("x.service", "user") is None
     assert d.timeline() == []              # unreachable → empty, not a crash
+
+
+def test_page_has_invoke_bar():
+    """The hub carries the invoke bar and its streaming client."""
+    html = page.render(security.new_token())
+    assert 'id="ask"' in html and "What would you like?" in html
+    assert "/api/stream" in html and "EventSource" in html
+
+
+def test_sse_frame_format():
+    frame = sse("delta", {"text": "hi"})
+    assert frame == b'event: delta\ndata: {"text": "hi"}\n\n'
+
+
+def test_to_sse_maps_messages():
+    assert b"event: delta" in (_to_sse(wire.Delta(id="x", text="hi")) or b"")
+    assert b"event: status" in (_to_sse(wire.Status(id="x", text="…")) or b"")
+    assert b"event: confirm" in (_to_sse(wire.Confirm(id="x", text="ok?")) or b"")
+    assert b"event: done" in (_to_sse(wire.Done(id="x")) or b"")
+    # Daemon errors are named "failed" (EventSource reserves "error").
+    assert b"event: failed" in (_to_sse(wire.Error(id="x", text="boom")) or b"")
+    # Non-invoke messages are skipped.
+    assert _to_sse(wire.Hello(chains=[], ready={}, default_chain="local", modules=[])) is None
+
+
+def test_query_session_graceful_when_socket_absent(tmp_path):
+    s = QuerySession(str(tmp_path / "nope.sock"), "q1", "hi", "web")
+    with pytest.raises(OSError):
+        s.open()
+
+
+def test_query_session_confirm_round_trip(tmp_path):
+    """Drive a full confirm exchange against a fake daemon over a real socket."""
+    import socket as _socket
+    import threading
+
+    sock_path = str(tmp_path / "d.sock")
+    srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    srv.listen(1)
+    seen: dict[str, object] = {}
+
+    def fake_daemon() -> None:
+        conn, _ = srv.accept()
+        with conn, conn.makefile("r") as f:
+            conn.sendall(wire.encode(wire.Hello(
+                chains=["local"], ready={"local": True},
+                default_chain="local", modules=[])).encode())
+            query = wire.decode(f.readline().strip())
+            seen["query"] = query
+            conn.sendall(wire.encode(wire.Confirm(id=query.id, text="Apply?")).encode())  # type: ignore[attr-defined]
+            resp = wire.decode(f.readline().strip())
+            seen["respond"] = resp
+            conn.sendall(wire.encode(wire.Delta(id=query.id, text="done")).encode())  # type: ignore[attr-defined]
+            conn.sendall(wire.encode(wire.Done(id=query.id, chain="local")).encode())  # type: ignore[attr-defined]
+
+    t = threading.Thread(target=fake_daemon)
+    t.start()
+
+    session = QuerySession(sock_path, "qid1", "install hello", "web")
+    session.open()
+    kinds: list[str] = []
+    for msg in session.messages():
+        kinds.append(msg.TYPE)
+        if isinstance(msg, wire.Confirm):
+            session.answer(confirmed=True)   # would come from POST /api/respond
+    t.join(timeout=5)
+    srv.close()
+
+    assert kinds == ["confirm", "delta", "done"]
+    assert isinstance(seen["query"], wire.Query) and seen["query"].text == "install hello"
+    assert isinstance(seen["respond"], wire.Respond) and seen["respond"].confirmed is True
+    assert seen["query"].id == "qid1"  # daemon query id == browser qid

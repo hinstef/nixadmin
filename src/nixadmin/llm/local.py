@@ -56,6 +56,33 @@ def parse_classify_response(reply: str, modules: list[Module]) -> list[Module]:
     return [m for m in modules if m.name.lower() in text]
 
 
+def build_escalate_prompt(query: str) -> str:
+    return (
+        "You are an on-device assistant with tools to inspect and change THIS "
+        "NixOS laptop (system state, installed apps, services). Decide if you can "
+        "handle the user's request confidently on your own, or whether it needs a "
+        "more capable cloud assistant (e.g. broad general knowledge, web lookups, "
+        "or reasoning beyond this machine's own state).\n"
+        "Reply with ONLY one word: LOCAL (you can handle it) or ESCALATE (it needs "
+        f"the cloud assistant).\n\nRequest: {query}"
+    )
+
+
+def parse_escalate_response(reply: str) -> bool:
+    """True = needs the frontier. Bias to staying local on anything ambiguous."""
+    return "escalate" in reply.strip().lower()
+
+
+def build_redact_prompt(text: str) -> str:
+    return (
+        "Rewrite the following request so it contains NO personal or sensitive "
+        "information (names, people, locations, identifiers, file contents, "
+        "credentials), while preserving the technical intent so another assistant "
+        "could still act on it. Output ONLY the rewritten request, nothing else.\n\n"
+        f"Request: {text}"
+    )
+
+
 def augment(query: str, context: str) -> str:
     if not context:
         return query
@@ -138,6 +165,45 @@ async def judge_package(query: str, candidates: list[str], *, model: str, url: s
         if c.lower() in reply:
             return c
     return ""
+
+
+async def assess_escalation(query: str, *, model: str, url: str) -> bool:
+    """Ask the local model to judge its own competence: can it handle this on
+    device, or does it need the frontier? Returns True to escalate.
+
+    Best-effort and timeout-guarded; on any failure it returns False (stay local),
+    so an unreachable/slow model never *pushes* work off the device by accident.
+    """
+    body = {
+        "model": model, "prompt": build_escalate_prompt(query), "stream": False,
+        "options": {"num_predict": 4, "temperature": 0},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{url}/api/generate", json=body)
+            r.raise_for_status()
+            return parse_escalate_response(r.json().get("response", ""))
+    except Exception as e:  # noqa: BLE001 — never escalate on a probe failure
+        log.warning("assess_escalation failed; staying local", error=str(e))
+        return False
+
+
+async def redact_rewrite(text: str, *, model: str, url: str) -> str:
+    """Rewrite ``text`` to drop contextual PII a regex can't catch. Best-effort:
+    returns the input unchanged if the model is unavailable or gives nothing."""
+    body = {
+        "model": model, "prompt": build_redact_prompt(text), "stream": False,
+        "options": {"num_predict": 256, "temperature": 0},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(f"{url}/api/generate", json=body)
+            r.raise_for_status()
+            out = r.json().get("response", "").strip()
+            return out or text
+    except Exception as e:  # noqa: BLE001 — degrade to the deterministic scrub
+        log.warning("redact_rewrite failed", error=str(e))
+        return text
 
 
 async def summarize(message: str, *, model: str, url: str) -> AsyncIterator[str]:

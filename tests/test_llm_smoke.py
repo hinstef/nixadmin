@@ -36,6 +36,23 @@ def test_augment_injects_context_or_passes_through():
     assert "Live system data" in out and "df" in out
 
 
+def test_escalate_prompt_and_parse():
+    prompt = local.build_escalate_prompt("what's the best photo editor?")
+    assert "LOCAL" in prompt and "ESCALATE" in prompt
+    assert "what's the best photo editor?" in prompt
+    assert local.parse_escalate_response("ESCALATE") is True
+    assert local.parse_escalate_response("escalate — needs the cloud") is True
+    assert local.parse_escalate_response("LOCAL") is False
+    assert local.parse_escalate_response("") is False           # bias: stay local
+    assert local.parse_escalate_response("i think local") is False
+
+
+def test_redact_prompt_asks_to_strip_pii():
+    prompt = local.build_redact_prompt("email me at a@b.com")
+    assert "sensitive" in prompt.lower() or "personal" in prompt.lower()
+    assert "email me at a@b.com" in prompt
+
+
 def test_build_tools_only_exposed_fetchers_plus_rebuild():
     tools = remote.build_tools(_modules())
     names = {t["function"]["name"] for t in tools}

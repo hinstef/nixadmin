@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
+from nixadmin import protocol as wire
 from nixadmin.log import get_logger
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
+from nixadmin.web.session import QuerySession, sse
 
 log = get_logger(__name__)
 
@@ -28,6 +32,25 @@ _CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
     "connect-src 'self'; base-uri 'none'; form-action 'none'"
 )
+
+
+def _to_sse(msg: wire.Message) -> bytes | None:
+    """Map a daemon message to an SSE frame for the invoke bar (or None to skip)."""
+    if isinstance(msg, wire.Status):
+        return sse("status", {"text": msg.text})
+    if isinstance(msg, wire.Delta):
+        return sse("delta", {"text": msg.text})
+    if isinstance(msg, wire.Confirm):
+        return sse("confirm", {"id": msg.id, "text": msg.text})
+    if isinstance(msg, wire.Input):
+        return sse("input", {"id": msg.id, "prompt": msg.prompt})
+    if isinstance(msg, wire.Done):
+        return sse("done", {"chain": msg.chain, "model": msg.model})
+    if isinstance(msg, wire.Error):
+        # Named "failed", not "error": EventSource reserves the "error" event for
+        # its own connection failures, so a server-sent "error" would be ambiguous.
+        return sse("failed", {"text": msg.text})
+    return None
 
 
 def socket_path() -> str:
@@ -120,23 +143,89 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 100
             self._json(200, {"events": self.app.dclient.timeline(limit, tl_unit)})
+        elif parsed.path == "/api/stream":
+            self._stream(qs)
         else:
             self._json(404, {"error": "not found"})
 
+    # --- invoke-bar streaming --------------------------------------------- #
+    def _stream(self, qs: dict[str, list[str]]) -> None:
+        """Server-Sent Events: drive one interactive query over a live daemon
+        socket and stream its messages to the browser. The token gates it; a query
+        that *acts* (install) still pauses for a confirm, which is a same-origin
+        POST (Origin-gated) — so a token alone can't complete a change."""
+        if not self._guard(qs, mutation=False):
+            return
+        text = (qs.get("text") or [""])[0].strip()
+        if not text:
+            self._json(400, {"error": "empty query"})
+            return
+        qid = (qs.get("qid") or [""])[0].strip() or uuid.uuid4().hex[:12]
+        session_id = (qs.get("session") or ["web"])[0]
+        session = QuerySession(self.app.dclient.path, qid, text, session_id)
+        try:
+            session.open()
+        except OSError:
+            self._json(503, {"error": "daemon unreachable"})
+            return
+        self.app.register_session(session)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")  # defeat proxy buffering
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            for msg in session.messages():
+                frame = _to_sse(msg)
+                if frame is None:
+                    continue
+                try:
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    session.cancel()  # browser navigated away mid-query
+                    return
+        finally:
+            self.app.drop_session(qid)
+            session.close()
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in ("/api/restart", "/api/explain"):
+        routes = ("/api/restart", "/api/explain", "/api/respond", "/api/cancel")
+        if parsed.path not in routes:
             self._json(404, {"error": "not found"})
             return
         if not self._guard(parse_qs(parsed.query), mutation=True):
             return
         body = self._body()
+        if parsed.path in ("/api/respond", "/api/cancel"):
+            self._invoke_control(parsed.path, body)
+            return
         unit = str(body.get("unit", ""))
         scope = str(body.get("scope", "system"))
         if parsed.path == "/api/restart":
             self._json(200, {"result": self.app.dclient.restart(unit, scope)})
         else:
             self._json(200, {"text": self.app.dclient.explain(unit, scope)})
+
+    def _invoke_control(self, path: str, body: dict[str, object]) -> None:
+        """Answer or cancel an in-flight invoke-bar query (by its qid)."""
+        session = self.app.get_session(str(body.get("qid", "")))
+        if session is None:
+            self._json(404, {"error": "no such query"})
+            return
+        if path == "/api/cancel":
+            session.cancel()
+        else:
+            confirmed = body.get("confirmed")
+            value = body.get("value")
+            session.answer(
+                confirmed=bool(confirmed) if confirmed is not None else None,
+                value=str(value) if value is not None else None,
+            )
+        self._json(200, {"ok": True})
 
     def _body(self) -> dict[str, object]:
         try:
@@ -156,6 +245,22 @@ class _WebServer(ThreadingHTTPServer):
         self.token = token
         self.dclient = dclient
         self.port = self.server_address[1]
+        # In-flight invoke-bar query sessions, keyed by the browser-supplied qid so
+        # a /api/respond on one thread can reach the session streaming on another.
+        self.sessions: dict[str, QuerySession] = {}
+        self._sessions_lock = threading.Lock()
+
+    def register_session(self, s: QuerySession) -> None:
+        with self._sessions_lock:
+            self.sessions[s.qid] = s
+
+    def drop_session(self, qid: str) -> None:
+        with self._sessions_lock:
+            self.sessions.pop(qid, None)
+
+    def get_session(self, qid: str) -> QuerySession | None:
+        with self._sessions_lock:
+            return self.sessions.get(qid)
 
 
 def _write_url_file(url: str) -> None:
