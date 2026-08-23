@@ -31,6 +31,11 @@ the guarantees the current implementation provides and the trust it still assume
   callers to its fixed actions and configured flake directory.
 - Local redaction reduces known secret and identifier shapes; it is not a formal
   guarantee that arbitrary text contains no identifying information.
+- A machine configured with the remote chain as its default has explicitly opted
+  into cloud processing. Those direct remote turns send the query, conversation
+  history, assembled context, and tool results without the escalation redaction
+  flow. Review-and-consent applies to automatic local-to-remote escalation, not to
+  each turn on an explicitly selected remote chain.
 - The web interface is loopback-only and protected by Host, Origin, and random-token
   checks. A process with access to the user's runtime directory remains inside the
   local-user trust boundary.

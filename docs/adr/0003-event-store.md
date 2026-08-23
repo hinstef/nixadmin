@@ -24,7 +24,7 @@ concrete costs:
 
 ## Decision
 
-Add a **daemon-owned, append-only event store** — a single timeline of system
+Add a **daemon-owned, append-oriented event store** — a single timeline of system
 events (`nixadmin/store.py`), backed by **SQLite via the stdlib `sqlite3`**.
 
 - **Daemon is the single writer.** Monitors, explanations, restarts and failure
@@ -69,7 +69,7 @@ schema migration.
 ## Current status — 2026-08-23
 
 The original decision remains in force. Subsequent work added schema versioning,
-age-based retention and pruning, cursor pagination, the kept-well ledger, and the
+age-based retention pruning, cursor pagination, the kept-well ledger, and the
 autofix consumer anticipated above. The additive wire protocol is now v4. These
-changes extend the store; they do not alter the single-writer or failure-isolation
-decision.
+changes preserve the single-writer and failure-isolation decisions; retained rows
+remain immutable, while expired rows are deliberately deleted by policy.

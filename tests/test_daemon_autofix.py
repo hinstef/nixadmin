@@ -22,7 +22,7 @@ async def test_autofix_unit_restarts_and_records_healthy(daemon_socket, tmp_path
     monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
     monkeypatch.setattr("nixadmin.server.remediation.restart_count", no_systemd_restarts)
 
-    await daemon._autofix_unit("foo.service", "user")
+    await daemon.autofix_engine.handle_unit("foo.service", "user")
     assert calls == [("foo.service", "user")]
     evs = await daemon.store.recent(10, kind="autofix")
     assert evs[0]["meta"]["action"] == "restart"
@@ -48,7 +48,7 @@ async def test_autofix_loop_guard_informs_without_restarting(daemon_socket, tmp_
 
     monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
     monkeypatch.setattr("nixadmin.server.remediation.restart_count", no_systemd_restarts)
-    await daemon._autofix_unit("foo.service", "user")
+    await daemon.autofix_engine.handle_unit("foo.service", "user")
     assert restarted is False  # budget spent → don't loop
     evs = await daemon.store.recent(10, kind="autofix")
     assert evs[0]["meta"]["action"] == "inform"
@@ -70,7 +70,7 @@ async def test_autofix_respects_systemd_restart_loop(daemon_socket, tmp_path, mo
 
     monkeypatch.setattr("nixadmin.server.remediation.restart_count", systemd_loop)
     monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
-    await daemon._autofix_unit("foo.service", "user")
+    await daemon.autofix_engine.handle_unit("foo.service", "user")
 
     assert restarted is False
     event = (await daemon.store.recent(1, kind="autofix"))[0]
@@ -101,10 +101,9 @@ async def test_run_autofix_once_per_episode_and_rearms_on_recovery(
     await daemon._run_autofix()   # foo is new → act once
     await daemon._run_autofix()   # same episode → no second action
     assert calls == ["foo.service"]
-    assert ("foo.service", "user") in daemon._autofix_seen
+    assert ("foo.service", "user") in daemon.autofix_engine.seen
 
     failing.clear()               # unit recovered
     await daemon._run_autofix()
-    assert ("foo.service", "user") not in daemon._autofix_seen  # episode forgotten
+    assert ("foo.service", "user") not in daemon.autofix_engine.seen  # episode forgotten
     await daemon.aclose()
-

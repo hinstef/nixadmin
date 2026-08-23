@@ -23,8 +23,8 @@ confirmation, rollback, and verification.
   and stops when systemd or nixadmin has already retried unsuccessfully.
 - Presents current health and a persistent event timeline through terminal, tray,
   Spotlight-style overlay, and web clients.
-- Offers an optional remote model only after showing a redacted payload and
-  receiving consent.
+- Can use an explicitly configured remote-default model; local-to-remote
+  escalation separately requires review of a redacted payload and consent.
 - Loads capability modules through a small typed Python SDK.
 
 ## Architecture
@@ -56,8 +56,9 @@ The important boundary is **model reasoning versus system authority**:
 - Configuration changes are evaluated before confirmation and applied atomically.
 - Failed activation is detected from real exit state and triggers rollback.
 - Runtime fixes are verified after execution; observations and actions are recorded.
-- Remote escalation is visible, optional, and limited to the reviewed redacted text
-  plus deterministically scrubbed tool results.
+- Automatic remote escalation is visible, optional, and limited to the reviewed
+  redacted text plus deterministically scrubbed tool results. A remote-default
+  configuration is an explicit cloud opt-in and sends normal query context.
 
 The current trusted-module and helper-socket limitations are stated in
 [`SECURITY.md`](SECURITY.md); design tradeoffs live in [`docs/adr/`](docs/adr/).
@@ -81,8 +82,8 @@ unverified action successful.
   a minimal root helper with an allowlisted protocol.
 - **Structured lifecycle ownership.** Async work, client connections, subprocesses,
   timeouts, and shutdown paths have bounded owners.
-- **Operational memory.** An append-only SQLite timeline supports diagnosis,
-  restart-loop prevention, retention, and a human-readable activity view.
+- **Operational memory.** An append-oriented SQLite timeline supports diagnosis,
+  restart-loop prevention, retention pruning, and a human-readable activity view.
 - **Backpressure at every boundary.** Socket frames, HTTP bodies, threads, sessions,
   subprocess output, and model context are capped.
 - **Reproducible delivery.** Nix builds the package and runs tests, strict typing,

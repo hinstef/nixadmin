@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 from nixadmin import autofix, remediation
 from nixadmin.autofix_engine import AutofixEngine
+from nixadmin.safety import SafetyGate
 from nixadmin.store import EventStore
 from nixadmin.timeline import TimelineService
 
@@ -21,12 +25,18 @@ async def test_failure_is_observed_fixed_verified_and_not_restarted_twice(
 
     store = EventStore(tmp_path / "events.db")
     timeline = TimelineService(store, current_failures)
-    privileged_calls: list[str] = []
+    helper_requests: list[dict[str, str]] = []
     notifications: list[tuple[str, str, str]] = []
 
-    async def helper_restart(unit: str) -> str:
-        privileged_calls.append(unit)
-        return "helper accepted fixed restart action"
+    helper_socket = str(tmp_path / "helper.sock")
+
+    async def fake_helper(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+    ) -> None:
+        helper_requests.append(json.loads((await reader.readline()).decode()))
+        writer.write(b'{"exit": 0}\n')
+        await writer.drain()
+        writer.close()
 
     async def emit(source: str, severity: str, text: str) -> None:
         notifications.append((source, severity, text))
@@ -42,39 +52,51 @@ async def test_failure_is_observed_fixed_verified_and_not_restarted_twice(
 
     monkeypatch.setattr(remediation, "restart_count", no_prior_systemd_restarts)
     monkeypatch.setattr(remediation, "_is_failed", verified_healthy)
+    monkeypatch.setattr(remediation, "failed_units", current_failures)
     monkeypatch.setattr(remediation.asyncio, "sleep", no_wait)
+    helper_server = await asyncio.start_unix_server(fake_helper, path=helper_socket)
     engine = AutofixEngine(
-        autofix.AutofixConfig(max_attempts=1), store, emit, helper_restart,
+        autofix.AutofixConfig(max_attempts=1), store, emit,
+        SafetyGate(helper_socket).apply_restart,
     )
 
     try:
         # Observe and persist the failure before policy acts.
         await timeline.record_failure_transitions(failures)
 
-        # Policy crosses only the injected privileged restart boundary, then
-        # remediation verifies live state before recording success.
-        await engine.handle_unit("backup.service", "system")
-        assert privileged_calls == ["backup.service"]
+        # The engine discovers the episode, crosses the real typed helper protocol,
+        # then remediation verifies live state before recording success.
+        await engine.run_once()
+        assert helper_requests == [{"action": "restart", "unit": "backup.service"}]
 
         # Recovery updates the timeline and the user-facing health summary.
         failures.clear()
         await timeline.record_failure_transitions(failures)
+        await engine.run_once()  # recovery re-arms the episode detector
         ledger = await timeline.kept_well()
         assert ledger["healthy_now"] is True
         assert "quietly restarted 1 service" in ledger["tally"]
 
-        # The persisted attempt exhausts the budget across episodes/restarts.
-        await engine.handle_unit("backup.service", "system")
-        assert privileged_calls == ["backup.service"]
+        # A fresh episode is discovered automatically, but the persisted attempt
+        # exhausts the restart budget across episodes.
+        failures.append({
+            "unit": "backup.service", "scope": "system", "description": "Backup",
+        })
+        await timeline.record_failure_transitions(failures)
+        await engine.run_once()
+        assert helper_requests == [{"action": "restart", "unit": "backup.service"}]
         assert notifications[-1][1] == "warning"
 
         events = await store.recent(10)
         assert [event["kind"] for event in events] == [
-            "autofix", "failure_cleared", "autofix", "failure_observed",
+            "autofix", "failure_observed", "failure_cleared", "autofix",
+            "failure_observed",
         ]
-        assert events[2]["meta"] == {
+        assert events[3]["meta"] == {
             "action": "restart", "outcome": "healthy", "attempt": 1,
         }
         assert events[0]["meta"]["action"] == "inform"
     finally:
+        helper_server.close()
+        await helper_server.wait_closed()
         await store.aclose()

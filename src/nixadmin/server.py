@@ -109,11 +109,9 @@ class Daemon:
         # so we never route work to a backend that will fail with an auth error.
         self.remote_ready = config.remote_usable
         self.connections = ConnectionManager(self._on_message, self._hello, self.operations)
-        self.conns = self.connections.clients
         self.autofix_engine = AutofixEngine(
             self.autofix_cfg, self.store, self._send_event, self.safety.apply_restart,
         )
-        self._autofix_seen = self.autofix_engine.seen
         # map exposed tool name -> shell command (fixed; no model-supplied args)
         self._tool_cmds = {
             f"{m.name}_{f.name}": f.cmd
@@ -146,7 +144,6 @@ class Daemon:
         # pre-existing failure as new.
         if self.autofix_cfg.enable:
             await self.autofix_engine.seed()
-            self._autofix_seen = self.autofix_engine.seen
             self._autofix_task = asyncio.create_task(self._autofix_loop())
         self._spawn(self._readiness_loop())
         if watchdog_interval() is not None:
@@ -161,6 +158,7 @@ class Daemon:
             self._autofix_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._autofix_task
+        await self.connections.aclose()
         await self._task_set.aclose()
         await self.monitors.aclose()
         await self.store.aclose()
@@ -179,7 +177,7 @@ class Daemon:
                 owner.owned_tasks.discard(done)
                 if not done.cancelled() and done.exception() is not None:
                     with contextlib.suppress(RuntimeError):
-                        self._task_set.spawn(self._close_connection(owner))
+                        self._task_set.spawn(self.connections.close(owner))
 
         task.add_done_callback(finished)
         return task
@@ -198,9 +196,6 @@ class Daemon:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         await self.connections.handle(reader, writer)
-
-    async def _close_connection(self, conn: ClientConn) -> None:
-        await self.connections.close(conn)
 
     async def _on_message(self, conn: ClientConn, line: str) -> None:
         try:
@@ -283,7 +278,7 @@ class Daemon:
         await conn.send(wire.Health(id=msg.id, data={
             "uptime_s": round(time.monotonic() - self._started_at, 3),
             "ready": {"local": self.local_ready, "remote": self.remote_ready},
-            "clients": len(self.conns),
+            "clients": len(self.connections.clients),
             "background_tasks": len(self._background_tasks),
             "monitors": self.monitors.health(),
             "store": {
@@ -756,7 +751,9 @@ class Daemon:
 
     async def _send_event(self, source: str, severity: str, text: str) -> None:
         """Fan an Event out to connected clients (no store write of its own)."""
-        await self._send_all(wire.Event(source=source, severity=severity, text=text))
+        await self.connections.broadcast(wire.Event(
+            source=source, severity=severity, text=text,
+        ))
 
     # ---- autofix ---------------------------------------------------------- #
 
@@ -775,14 +772,8 @@ class Daemon:
     async def _run_autofix(self) -> None:
         await self.autofix_engine.run_once()
 
-    async def _autofix_unit(self, unit: str, scope: str) -> None:
-        await self.autofix_engine.handle_unit(unit, scope)
-
     async def _broadcast_ready(self, chain: str) -> None:
-        await self._send_all(wire.Ready(chain=chain))
-
-    async def _send_all(self, msg: wire.Message) -> None:
-        await self.connections.broadcast(msg)
+        await self.connections.broadcast(wire.Ready(chain=chain))
 
 
 async def _serve(daemon: Daemon) -> None:

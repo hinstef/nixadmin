@@ -72,9 +72,15 @@ class ConnectionManager:
         self._hello = hello
         self._operations = operations
         self.clients: set[ClientConn] = set()
+        self._closing = False
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         connection = ClientConn(reader, writer)
+        if self._closing:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
         self.clients.add(connection)
         try:
             await connection.send(self._hello())
@@ -114,6 +120,11 @@ class ConnectionManager:
         with contextlib.suppress(Exception):
             async with asyncio.timeout(1.0):
                 await connection.writer.wait_closed()
+
+    async def aclose(self) -> None:
+        """Reject new peers and close every active transport concurrently."""
+        self._closing = True
+        await asyncio.gather(*(self.close(connection) for connection in tuple(self.clients)))
 
     async def broadcast(self, message: wire.Message) -> None:
         async def send(connection: ClientConn) -> None:

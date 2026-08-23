@@ -1,6 +1,6 @@
 """Event store — the persistent system-event timeline.
 
-An append-only log of what the daemon *observed* and *did*: a unit failed, an
+An append-oriented log of what the daemon *observed* and *did*: a unit failed, an
 explanation was generated, a restart was attempted (and whether it stuck), a
 journal was snapshotted, a monitor fired. This is the observability substrate —
 what makes the machine's recent history legible in the web hub, and the record a
