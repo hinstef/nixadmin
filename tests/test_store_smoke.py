@@ -8,6 +8,9 @@ path bootstraps its own schema + parent directory.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
 from nixadmin.config import Config
@@ -103,10 +106,26 @@ async def test_prune_removes_only_events_older_than_cutoff(store, monkeypatch):
     assert [event["text"] for event in await store.recent()] == ["new"]
 
 
-async def test_async_close_waits_for_store_lock(tmp_path):
+async def test_async_close_waits_for_inflight_store_operation(tmp_path, monkeypatch):
     store = EventStore(tmp_path / "events.db")
-    await store.aclose()
-    assert await store.recent() == []
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_query(*args):
+        started.set()
+        release.wait(timeout=2)
+        return []
+
+    monkeypatch.setattr(store, "_query", blocked_query)
+    query = asyncio.create_task(store.recent())
+    assert await asyncio.to_thread(started.wait, 1)
+    close = asyncio.create_task(store.aclose())
+    await asyncio.sleep(0)
+    assert not close.done()
+
+    release.set()
+    await query
+    await close
 
 
 async def test_null_store_is_inert():
@@ -131,3 +150,5 @@ def test_event_retention_config_is_non_negative():
     assert Config.from_env({"NIXADMIN_EVENT_RETENTION_DAYS": "0"}).event_retention_days == 0
     with pytest.raises(ConfigError, match="EVENT_RETENTION_DAYS"):
         Config.from_env({"NIXADMIN_EVENT_RETENTION_DAYS": "forever"})
+    with pytest.raises(ConfigError, match="EVENT_RETENTION_DAYS"):
+        Config.from_env({"NIXADMIN_EVENT_RETENTION_DAYS": "-1"})

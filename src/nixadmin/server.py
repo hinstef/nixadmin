@@ -85,6 +85,7 @@ class ClientConn:
         self.writer = writer
         self.pending: dict[str, asyncio.Future[wire.Respond]] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.owned_tasks: set[asyncio.Task[None]] = set()
 
     async def send(self, msg: wire.Message) -> None:
         self.writer.write(wire.encode(msg).encode())
@@ -190,11 +191,23 @@ class Daemon:
         await self.store.aclose()
         Path(self.cfg.socket_path).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op
 
-    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def _spawn(
+        self, coroutine: Coroutine[Any, Any, None], *, owner: ClientConn | None = None,
+    ) -> asyncio.Task[None]:
         """Start daemon-owned work and retain it until completion or shutdown."""
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        if owner is not None:
+            owner.owned_tasks.add(task)
+
+        def finished(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            if owner is not None:
+                owner.owned_tasks.discard(done)
+            if not done.cancelled() and (error := done.exception()) is not None:
+                log.error("background task failed", error=str(error), exc_info=error)
+
+        task.add_done_callback(finished)
         return task
 
     # ---- connection handling --------------------------------------------- #
@@ -220,7 +233,7 @@ class Daemon:
             pass
         finally:
             self.conns.discard(conn)
-            tasks = tuple(conn.tasks.values())
+            tasks = tuple(conn.owned_tasks)
             for task in tasks:
                 task.cancel()
             if tasks:
@@ -239,7 +252,7 @@ class Daemon:
             return
 
         if isinstance(msg, wire.Query):
-            task = self._spawn(self._dispatch(conn, msg))
+            task = self._spawn(self._dispatch(conn, msg), owner=conn)
             conn.tasks[msg.id] = task
 
             def forget_query(done: asyncio.Task[None]) -> None:
@@ -254,17 +267,17 @@ class Daemon:
         elif isinstance(msg, wire.Respond):
             conn.deliver_response(msg)
         elif isinstance(msg, wire.ListFailures):
-            self._spawn(self._list_failures(conn, msg))
+            self._spawn(self._list_failures(conn, msg), owner=conn)
         elif isinstance(msg, wire.RestartUnit):
-            self._spawn(self._restart_unit(conn, msg))
+            self._spawn(self._restart_unit(conn, msg), owner=conn)
         elif isinstance(msg, wire.ExplainUnit):
-            self._spawn(self._explain_unit(conn, msg))
+            self._spawn(self._explain_unit(conn, msg), owner=conn)
         elif isinstance(msg, wire.UnitJournal):
-            self._spawn(self._unit_journal(conn, msg))
+            self._spawn(self._unit_journal(conn, msg), owner=conn)
         elif isinstance(msg, wire.GetTimeline):
-            self._spawn(self._get_timeline(conn, msg))
+            self._spawn(self._get_timeline(conn, msg), owner=conn)
         elif isinstance(msg, wire.GetLedger):
-            self._spawn(self._get_ledger(conn, msg))
+            self._spawn(self._get_ledger(conn, msg), owner=conn)
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from.
@@ -874,12 +887,19 @@ class Daemon:
                 self.conns.discard(conn)
 
 
+async def _serve(daemon: Daemon) -> None:
+    try:
+        await daemon.run()
+    finally:
+        await daemon.aclose()
+
+
 def main() -> None:
     config = Config.from_env()
     logmod.configure(config.log_format, config.log_level)
     daemon = Daemon(config)
     try:
-        asyncio.run(daemon.run())
+        asyncio.run(_serve(daemon))
     except KeyboardInterrupt:
         pass
 

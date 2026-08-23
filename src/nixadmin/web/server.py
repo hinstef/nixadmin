@@ -12,6 +12,9 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from fcntl import LOCK_EX, LOCK_UN, flock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
@@ -285,15 +288,30 @@ class _WebServer(ThreadingHTTPServer):
             return self.sessions.get(qid)
 
 
+@contextmanager
+def _url_file_lock() -> Iterator[None]:
+    lock_path = url_file().with_suffix(".url.lock")
+    descriptor = os.open(
+        lock_path, os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600
+    )
+    try:
+        flock(descriptor, LOCK_EX)
+        yield
+    finally:
+        flock(descriptor, LOCK_UN)
+        os.close(descriptor)
+
+
 def _write_url_file(url: str) -> None:
     path = url_file()
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        temporary.write_text(url + "\n")
-        temporary.chmod(0o600)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    with _url_file_lock():
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
+        try:
+            temporary.write_text(url + "\n")
+            temporary.chmod(0o600)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _remove_url_file(url: str) -> None:
@@ -304,11 +322,12 @@ def _remove_url_file(url: str) -> None:
     record.
     """
     path = url_file()
-    try:
-        if path.read_text().strip() == url:
-            path.unlink(missing_ok=True)
-    except FileNotFoundError:
-        pass
+    with _url_file_lock():
+        try:
+            if path.read_text().strip() == url:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
 
 
 def main() -> None:

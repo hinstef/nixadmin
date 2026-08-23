@@ -6,12 +6,14 @@ checks that must never regress: token, Host, and Origin gating.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from nixadmin import protocol as wire
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
-from nixadmin.web.server import _remove_url_file, _to_sse, _write_url_file
+from nixadmin.web.server import _remove_url_file, _to_sse, _url_file_lock, _write_url_file
 from nixadmin.web.session import QuerySession, sse
 
 PORT = 7677
@@ -31,6 +33,22 @@ def test_url_file_is_atomic_and_cleanup_is_instance_owned(tmp_path, monkeypatch)
     assert (tmp_path / "nixadmin-web.url").read_text() == new + "\n"
     _remove_url_file(new)
     assert not (tmp_path / "nixadmin-web.url").exists()
+
+
+def test_url_file_updates_serialize_across_threads(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    finished = threading.Event()
+
+    def write() -> None:
+        _write_url_file("http://127.0.0.1:7677/?token=new")
+        finished.set()
+
+    with _url_file_lock():
+        worker = threading.Thread(target=write)
+        worker.start()
+        assert not finished.wait(0.05)
+    worker.join(timeout=1)
+    assert finished.is_set()
 
 
 def test_token_ok():

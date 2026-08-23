@@ -114,12 +114,17 @@ class Config:
 
         raw_retention = get("EVENT_RETENTION_DAYS", "90")
         try:
-            retention_days = max(0, int(raw_retention))
+            retention_days = int(raw_retention)
         except ValueError as exc:
             raise ConfigError(
                 "NIXADMIN_EVENT_RETENTION_DAYS must be a non-negative integer, "
                 f"got {raw_retention!r}"
             ) from exc
+        if retention_days < 0:
+            raise ConfigError(
+                "NIXADMIN_EVENT_RETENTION_DAYS must be a non-negative integer, "
+                f"got {raw_retention!r}"
+            )
 
         return cls(
             flake_dir=get("FLAKE_DIR", ""),

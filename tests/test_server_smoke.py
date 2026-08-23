@@ -14,7 +14,7 @@ import pytest
 from nixadmin import protocol as wire
 from nixadmin import redact, remediation
 from nixadmin.config import Config
-from nixadmin.server import Daemon
+from nixadmin.server import Daemon, _serve
 
 
 class FakeConn:
@@ -70,6 +70,68 @@ async def test_daemon_cancels_owned_background_tasks(daemon_socket):
 
     assert task.cancelled()
     assert not daemon._background_tasks
+
+
+async def test_serve_always_closes_daemon():
+    closed = False
+
+    class FakeDaemon:
+        async def run(self) -> None:
+            raise RuntimeError("stop")
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await _serve(FakeDaemon())  # type: ignore[arg-type]
+    assert closed
+
+
+async def test_background_task_failure_is_observed(daemon_socket, monkeypatch):
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    errors: list[str] = []
+    monkeypatch.setattr("nixadmin.server.log.error", lambda message, **kw: errors.append(message))
+
+    async def fails() -> None:
+        raise RuntimeError("broken task")
+
+    task = daemon._spawn(fails())
+    with pytest.raises(RuntimeError, match="broken task"):
+        await task
+    await asyncio.sleep(0)
+    assert errors == ["background task failed"]
+    await daemon.aclose()
+
+
+async def test_disconnect_cancels_non_query_request(daemon_socket, monkeypatch):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_failures():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr("nixadmin.server.remediation.failed_units", slow_failures)
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    server_task = asyncio.create_task(daemon.run())
+    await asyncio.sleep(0.1)
+    try:
+        reader, writer = await asyncio.open_unix_connection(daemon_socket)
+        await _read_until(reader, "hello")
+        writer.write(wire.encode(wire.ListFailures(id="list-1")).encode())
+        await writer.drain()
+        await started.wait()
+        writer.close()
+        await writer.wait_closed()
+        async with asyncio.timeout(1.0):
+            await cancelled.wait()
+    finally:
+        server_task.cancel()
+        await daemon.aclose()
 
 
 async def test_remote_query_round_trip(daemon_socket, monkeypatch):
