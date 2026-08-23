@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import os
 import re
 import shutil
@@ -37,6 +38,8 @@ from nixadmin.util import run as _run
 log = get_logger(__name__)
 
 HOME_FILE = "modules/home-manager/default.nix"
+WORKTREE_PREFIX = "nixadmin-wt-"
+WORKTREE_MARKER = ".nixadmin-owner.json"
 
 # In-memory projection of the pinned nixpkgs attribute names. Built lazily from
 # the local store (no shadow file, no nix-internal DB), held for the daemon's
@@ -281,9 +284,13 @@ async def run_app_action(
 async def _validate_in_worktree(flake_dir: str, hostname: str, edited: str) -> tuple[bool, str]:
     """Apply `edited` in a throwaway worktree and prove it evaluates. Returns
     (ok, diff). Never touches the live working tree."""
-    wt = tempfile.mkdtemp(prefix="nixadmin-wt-")
+    wt = tempfile.mkdtemp(prefix=WORKTREE_PREFIX)
     try:
         await _git(flake_dir, "worktree", "add", "--detach", wt, "HEAD")
+        repo_path = await asyncio.to_thread(os.path.realpath, flake_dir)
+        (Path(wt) / WORKTREE_MARKER).write_text(json.dumps({
+            "repo": repo_path, "pid": os.getpid(),
+        }))
         (Path(wt) / HOME_FILE).write_text(edited)
         attr = f"path:{wt}#nixosConfigurations.{hostname}.config.system.build.toplevel.drvPath"
         rc, _out = await _run("nix", "eval", "--raw", attr)
@@ -294,6 +301,46 @@ async def _validate_in_worktree(flake_dir: str, hostname: str, edited: str) -> t
     finally:
         await _git(flake_dir, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
+
+
+async def prune_abandoned_worktrees(
+    flake_dir: str, *, temp_root: str | Path | None = None,
+) -> int:
+    """Remove dead nixadmin-owned validation worktrees for this exact flake."""
+    root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
+    expected_repo = await asyncio.to_thread(os.path.realpath, flake_dir)
+    removed = 0
+    for candidate in root.glob(f"{WORKTREE_PREFIX}*"):
+        marker = candidate / WORKTREE_MARKER
+        try:
+            owner = json.loads(marker.read_text())
+            if owner.get("repo") != expected_repo or _pid_alive(int(owner["pid"])):
+                continue
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+        try:
+            await _git(flake_dir, "worktree", "remove", "--force", str(candidate))
+        except NixadminError as error:
+            log.warning("could not prune abandoned worktree", path=str(candidate), error=str(error))
+            continue
+        shutil.rmtree(candidate, ignore_errors=True)
+        removed += 1
+    if removed:
+        await _git(flake_dir, "worktree", "prune")
+        log.info("pruned abandoned validation worktrees", count=removed)
+    return removed
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 async def _git(repo: str, *args: str) -> str:

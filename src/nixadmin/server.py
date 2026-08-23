@@ -162,6 +162,8 @@ class Daemon:
         log.info("listening", socket=sock, default_chain=self.cfg.default_chain)
 
         await self.monitors.start()
+        if self.cfg.flake_dir:
+            await actions.prune_abandoned_worktrees(self.cfg.flake_dir)
         if self.cfg.event_retention_days > 0:
             await self._prune_events()
             self._spawn(self._event_prune_loop())

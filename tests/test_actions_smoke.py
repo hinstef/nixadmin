@@ -4,6 +4,8 @@ needs real git + nix; the rest of the path is real)."""
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -111,6 +113,40 @@ def test_edit_existing_packages_preserves_unrelated_entries(packages):
     assert target not in {line.strip() for line in removed.splitlines()}
     assert all(package in {line.strip() for line in removed.splitlines()}
                for package in packages[1:])
+
+
+async def test_prune_abandoned_worktrees_is_marker_and_repo_scoped(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    dead = tmp_path / "nixadmin-wt-dead"
+    active = tmp_path / "nixadmin-wt-active"
+    foreign = tmp_path / "nixadmin-wt-foreign"
+    unrelated = tmp_path / "nixadmin-wt-unmarked"
+    for path in (dead, active, foreign, unrelated):
+        path.mkdir()
+    (dead / actions.WORKTREE_MARKER).write_text(json.dumps({
+        "repo": str(repo.resolve()), "pid": 999_999_999,
+    }))
+    (active / actions.WORKTREE_MARKER).write_text(json.dumps({
+        "repo": str(repo.resolve()), "pid": os.getpid(),
+    }))
+    (foreign / actions.WORKTREE_MARKER).write_text(json.dumps({
+        "repo": str((tmp_path / "other").resolve()), "pid": 999_999_999,
+    }))
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_git(_repo, *args):
+        calls.append(args)
+        if args[:3] == ("worktree", "remove", "--force"):
+            import shutil
+            shutil.rmtree(args[3])
+        return ""
+
+    monkeypatch.setattr(actions, "_git", fake_git)
+    assert await actions.prune_abandoned_worktrees(str(repo), temp_root=tmp_path) == 1
+    assert not dead.exists()
+    assert active.exists() and foreign.exists() and unrelated.exists()
+    assert ("worktree", "prune") in calls
 
 
 # A stand-in for the real (huge) nixpkgs name list — fuzzy_candidates is the pure
