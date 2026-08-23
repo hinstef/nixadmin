@@ -11,10 +11,26 @@ import pytest
 from nixadmin import protocol as wire
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
-from nixadmin.web.server import _to_sse
+from nixadmin.web.server import _remove_url_file, _to_sse, _write_url_file
 from nixadmin.web.session import QuerySession, sse
 
 PORT = 7677
+
+
+def test_url_file_is_atomic_and_cleanup_is_instance_owned(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    old = "http://127.0.0.1:7677/?token=old"
+    new = "http://127.0.0.1:7677/?token=new"
+
+    _write_url_file(old)
+    assert (tmp_path / "nixadmin-web.url").read_text() == old + "\n"
+    assert (tmp_path / "nixadmin-web.url").stat().st_mode & 0o777 == 0o600
+
+    _write_url_file(new)
+    _remove_url_file(old)
+    assert (tmp_path / "nixadmin-web.url").read_text() == new + "\n"
+    _remove_url_file(new)
+    assert not (tmp_path / "nixadmin-web.url").exists()
 
 
 def test_token_ok():

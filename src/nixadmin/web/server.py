@@ -287,22 +287,43 @@ class _WebServer(ThreadingHTTPServer):
 
 def _write_url_file(url: str) -> None:
     path = url_file()
-    path.write_text(url + "\n")
-    path.chmod(0o600)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(url + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _remove_url_file(url: str) -> None:
+    """Remove only the discovery record written by this server instance.
+
+    During a rolling restart the replacement may publish its URL before the old
+    process reaches ``finally``.  The old process must not unlink that newer
+    record.
+    """
+    path = url_file()
+    try:
+        if path.read_text().strip() == url:
+            path.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
 
 
 def main() -> None:
     token = security.new_token()
     port = int(os.environ.get("NIXADMIN_WEB_PORT", str(DEFAULT_PORT)))
     server = _WebServer(("127.0.0.1", port), token, Daemon(socket_path()))
-    _write_url_file(f"http://127.0.0.1:{server.port}/?token={token}")
+    url = f"http://127.0.0.1:{server.port}/?token={token}"
+    _write_url_file(url)
     log.info("web listening", addr=f"127.0.0.1:{server.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        url_file().unlink(missing_ok=True)
+        _remove_url_file(url)
 
 
 if __name__ == "__main__":
