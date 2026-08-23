@@ -503,7 +503,11 @@ async def test_autofix_unit_restarts_and_records_healthy(daemon_socket, tmp_path
         calls.append((unit, scope))
         return remediation.RestartOutcome(True, f"Restarted {unit} — healthy again.")
 
+    async def no_systemd_restarts(_unit, _scope):
+        return 0
+
     monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+    monkeypatch.setattr("nixadmin.server.remediation.restart_count", no_systemd_restarts)
 
     await daemon._autofix_unit("foo.service", "user")
     assert calls == [("foo.service", "user")]
@@ -526,11 +530,39 @@ async def test_autofix_loop_guard_informs_without_restarting(daemon_socket, tmp_
         restarted = True
         return "x"
 
+    async def no_systemd_restarts(_unit, _scope):
+        return 0
+
     monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+    monkeypatch.setattr("nixadmin.server.remediation.restart_count", no_systemd_restarts)
     await daemon._autofix_unit("foo.service", "user")
     assert restarted is False  # budget spent → don't loop
     evs = await daemon.store.recent(10, kind="autofix")
     assert evs[0]["meta"]["action"] == "inform"
+    await daemon.aclose()
+
+
+async def test_autofix_respects_systemd_restart_loop(daemon_socket, tmp_path, monkeypatch):
+    cfg = Config(socket_path=daemon_socket, events="sqlite", state_dir=str(tmp_path))
+    daemon = Daemon(cfg)
+    restarted = False
+
+    async def systemd_loop(_unit, _scope):
+        return 4
+
+    async def fake_restart(*_args, **_kwargs):
+        nonlocal restarted
+        restarted = True
+        return remediation.RestartOutcome(True, "unexpected")
+
+    monkeypatch.setattr("nixadmin.server.remediation.restart_count", systemd_loop)
+    monkeypatch.setattr("nixadmin.server.remediation.restart_resolved", fake_restart)
+    await daemon._autofix_unit("foo.service", "user")
+
+    assert restarted is False
+    event = (await daemon.store.recent(1, kind="autofix"))[0]
+    assert event["meta"]["systemd_restarts"] == 4
+    assert event["meta"]["recorded_attempts"] == 0
     await daemon.aclose()
 
 

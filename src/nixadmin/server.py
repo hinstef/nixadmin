@@ -850,7 +850,11 @@ class Daemon:
     async def _autofix_unit(self, unit: str, scope: str) -> None:
         since = time.time() - self.autofix_cfg.window_s
         prior = await self.store.recent(50, unit=unit, kind="autofix", since=since)
-        attempts = sum(1 for e in prior if e.get("meta", {}).get("action") == "restart")
+        recorded_attempts = sum(
+            1 for e in prior if e.get("meta", {}).get("action") == "restart"
+        )
+        systemd_attempts = await remediation.restart_count(unit, scope)
+        attempts = max(recorded_attempts, systemd_attempts)
         decision = autofix.decide(
             scope=scope, prior_attempts=attempts, cfg=self.autofix_cfg
         )
@@ -861,8 +865,13 @@ class Daemon:
                 f"{unit} keeps failing and needs a real fix."
                 if attempts else f"{unit} stopped and needs attention."
             )
-            await self.store.append("autofix", unit=unit, scope=scope,
-                                    severity="warning", text=text, meta={"action": "inform"})
+            await self.store.append(
+                "autofix", unit=unit, scope=scope, severity="warning", text=text,
+                meta={
+                    "action": "inform", "recorded_attempts": recorded_attempts,
+                    "systemd_restarts": systemd_attempts,
+                },
+            )
             await self._send_event("autofix", "warning", text)
             return
 

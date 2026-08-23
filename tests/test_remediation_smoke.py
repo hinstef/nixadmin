@@ -139,5 +139,25 @@ async def test_restart_resolved_still_failing_is_honest(monkeypatch):
     assert "disk quota exceeded" in out.message  # honest — the real reason, no fake "Done!"
 
 
+async def test_restart_count_reads_systemd_property_and_degrades_safely(monkeypatch):
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run(*args):
+        calls.append(args)
+        return 0, "7\n"
+
+    monkeypatch.setattr(remediation, "_run", fake_run)
+    assert await remediation.restart_count("foo.service", "user") == 7
+    assert calls == [(
+        "systemctl", "--user", "show", "foo.service", "--property=NRestarts", "--value",
+    )]
+
+    async def malformed(*_args):
+        return 0, "unknown"
+
+    monkeypatch.setattr(remediation, "_run", malformed)
+    assert await remediation.restart_count("foo.service", "system") == 0
+
+
 async def _ok():
     return "ok"

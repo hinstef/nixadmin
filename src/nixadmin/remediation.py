@@ -189,6 +189,22 @@ async def failed_units() -> list[dict[str, str]]:
     return out
 
 
+async def restart_count(unit: str, scope: str) -> int:
+    """Return systemd's restart count for the current manager lifetime.
+
+    This catches services whose own ``Restart=`` policy is already looping before
+    nixadmin considers adding another restart. The persistent event-store guard
+    remains the cross-manager/cross-reboot signal.
+    """
+    try:
+        _rc, out = await _run(*_scoped(
+            scope, "systemctl", "show", unit, "--property=NRestarts", "--value",
+        ))
+        return max(0, int(out.strip()))
+    except (NixadminError, ValueError):
+        return 0
+
+
 def _scoped(scope: str, *args: str) -> tuple[str, ...]:
     """Prefix systemctl/journalctl args with --user for the user scope."""
     head, tail = args[0], args[1:]
