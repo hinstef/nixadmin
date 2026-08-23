@@ -226,9 +226,11 @@ class Handler(BaseHTTPRequestHandler):
         unit = str(body.get("unit", ""))
         scope = str(body.get("scope", "system"))
         if parsed.path == "/api/restart":
-            self._json(200, {"result": self.app.dclient.restart(unit, scope)})
+            result, ok = self.app.dclient.restart(unit, scope)
+            self._json(200, {"result": result, "ok": ok})
         else:
-            self._json(200, {"text": self.app.dclient.explain(unit, scope)})
+            text, ok = self.app.dclient.explain(unit, scope)
+            self._json(200, {"text": text, "ok": ok})
 
     def _invoke_control(self, path: str, body: dict[str, object]) -> None:
         """Answer or cancel an in-flight invoke-bar query (by its qid)."""

@@ -131,6 +131,25 @@ def test_operations_use_progressive_disclosure_and_phases():
     assert "Waiting for approval" in operation
     assert "Applying the change" in operation
     assert "Verifying the result" in operation
+    assert "startTask" in operation
+    assert "do not duplicate streamed answer text" in operation
+
+
+def test_activity_uses_human_summaries_and_groups_service_episodes():
+    timeline = (page.asset("timeline.js") or ("", b""))[1].decode()
+    assert "groupEpisodes" in timeline and "LIFECYCLE_KINDS" in timeline
+    assert "needs attention" in timeline
+    assert "restarted it and verified" in timeline
+    assert 'replaceAll("_", " ")' not in timeline
+    # Raw kinds and metadata remain available, but only in diagnostic evidence.
+    assert "rawEvidence" in timeline and "event.kind" in timeline
+
+
+def test_failed_unit_controls_share_operation_cards():
+    app = (page.asset("app.js") or ("", b""))[1].decode()
+    assert "startTask(`Restart" in app
+    assert "startTask(`Explain" in app
+    assert "startTask(`Journal" in app
 
 
 def test_assets_reject_traversal_and_unknown_types():

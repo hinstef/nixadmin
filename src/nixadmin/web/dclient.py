@@ -89,18 +89,22 @@ class Daemon:
             {"type": "get_ledger", "id": _id()}, terminal=(wire.Ledger,))
         return msg.data if isinstance(msg, wire.Ledger) else None
 
-    def restart(self, unit: str, scope: str) -> str:
+    def restart(self, unit: str, scope: str) -> tuple[str, bool]:
         msg, deltas = self._roundtrip(
             {"type": "restart_unit", "id": _id(), "unit": unit, "scope": scope},
             terminal=(wire.Done, wire.Error), collect=True)
         if isinstance(msg, wire.Error):
-            return msg.text
-        return deltas or "done"
+            return msg.text, False
+        if isinstance(msg, wire.Done):
+            return deltas or "done", True
+        return "daemon unreachable", False
 
-    def explain(self, unit: str, scope: str) -> str:
+    def explain(self, unit: str, scope: str) -> tuple[str, bool]:
         msg, deltas = self._roundtrip(
             {"type": "explain_unit", "id": _id(), "unit": unit, "scope": scope},
             terminal=(wire.Done, wire.Error), collect=True, timeout=EXPLAIN_TIMEOUT)
         if isinstance(msg, wire.Error):
-            return msg.text
-        return deltas or "(no explanation available)"
+            return msg.text, False
+        if isinstance(msg, wire.Done):
+            return deltas or "(no explanation available)", True
+        return "daemon unreachable", False

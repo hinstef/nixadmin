@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { startOperation } from "./operation.js";
+import { startOperation, startTask } from "./operation.js";
 import { loadTimeline, wireTimelineNavigation } from "./timeline.js";
 
 window.nixadminSession = `web-${Math.random().toString(36).slice(2, 10)}`;
@@ -42,46 +42,55 @@ function unitCard(unit) {
   const restart = el("button", null, "Restart");
   const explain = el("button", null, "Explain");
   const journal = el("button", null, "Journal");
-  const output = el("div");
   restart.onclick = async () => {
-    restart.disabled = true; restart.textContent = "Restarting…";
-    try {
-      const result = await (await api("/api/restart", {
-        method: "POST", body: JSON.stringify({ unit: unit.unit, scope: unit.scope }),
-      })).json();
-      output.textContent = result.result || "Restarted.";
-    } catch { output.textContent = "The restart could not be completed."; }
-    restart.disabled = false; restart.textContent = "Restart";
-    loadTimeline({ reset: true }); setTimeout(refresh, 800);
+    restart.disabled = true;
+    await startTask(`Restart ${unit.unit}`, {
+      initialPhase: "Restarting the service",
+      run: async ({ setPhase }) => {
+        const result = await (await api("/api/restart", {
+          method: "POST", body: JSON.stringify({ unit: unit.unit, scope: unit.scope }),
+        })).json();
+        setPhase("Verifying the result");
+        return { answer: result.result || "Restarted.", ok: result.ok };
+      },
+      onDone: () => { loadTimeline({ reset: true }); setTimeout(refresh, 800); },
+    });
+    restart.disabled = false;
   };
-  explain.onclick = () => runExplain(unit.unit, unit.scope, output, explain);
+  explain.onclick = () => runExplain(unit.unit, unit.scope, explain);
   journal.onclick = async () => {
-    journal.disabled = true; journal.textContent = "Loading…";
-    try {
-      const result = await (await api(`/api/journal?unit=${encodeURIComponent(unit.unit)}&scope=${encodeURIComponent(unit.scope)}`)).json();
-      output.textContent = "";
-      const details = el("details");
-      details.open = true;
-      details.append(el("summary", null, "Journal details"), el("pre", null, result.text || "No journal entries."));
-      output.appendChild(details);
-    } catch { output.textContent = "The journal could not be loaded."; }
-    journal.disabled = false; journal.textContent = "Journal";
+    journal.disabled = true;
+    await startTask(`Journal for ${unit.unit}`, {
+      initialPhase: "Loading technical details",
+      run: async () => {
+        const result = await (await api(`/api/journal?unit=${encodeURIComponent(unit.unit)}&scope=${encodeURIComponent(unit.scope)}`)).json();
+        return {
+          answer: result.text ? "Journal details are ready." : "No recent journal entries were found.",
+          detail: result.text || "No journal entries.",
+        };
+      },
+      onDone: () => loadTimeline({ reset: true }),
+    });
+    journal.disabled = false;
   };
-  actions.append(restart, explain, journal); card.append(actions, output);
+  actions.append(restart, explain, journal); card.appendChild(actions);
   return card;
 }
 
-async function runExplain(unit, scope, output, button) {
-  button.disabled = true; button.textContent = "Thinking…";
-  output.textContent = `Looking into ${unit}…`;
-  try {
-    const result = await (await api("/api/explain", {
-      method: "POST", body: JSON.stringify({ unit, scope }),
-    })).json();
-    output.textContent = result.text || "No explanation available.";
-  } catch { output.textContent = "The explanation could not be generated."; }
-  button.disabled = false; button.textContent = "Explain";
-  loadTimeline({ reset: true });
+async function runExplain(unit, scope, button) {
+  if (button) button.disabled = true;
+  await startTask(`Explain ${unit}`, {
+    initialPhase: "Looking into the failure",
+    run: async ({ setPhase }) => {
+      const result = await (await api("/api/explain", {
+        method: "POST", body: JSON.stringify({ unit, scope }),
+      })).json();
+      setPhase("Putting it into plain language");
+      return { answer: result.text || "No explanation available.", ok: result.ok };
+    },
+    onDone: () => loadTimeline({ reset: true }),
+  });
+  if (button) button.disabled = false;
 }
 
 async function loadLedger() {
@@ -141,7 +150,7 @@ async function boot() {
     if (card) {
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       const button = [...card.querySelectorAll("button")].find(node => node.textContent === "Explain");
-      runExplain(unit, params.get("scope") || "system", card.lastElementChild, button);
+      runExplain(unit, params.get("scope") || "system", button);
     }
   }
 }
