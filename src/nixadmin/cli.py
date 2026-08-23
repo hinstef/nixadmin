@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from nixadmin import protocol as wire
+from nixadmin.errors import ProtocolError
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -144,6 +145,17 @@ async def _run() -> int:
         return 1
 
     client = Client(reader, writer)
+    try:
+        hello = wire.decode((await reader.readline()).decode().strip())
+        if not isinstance(hello, wire.Hello):
+            raise ProtocolError("daemon did not send Hello first")
+        wire.require_compatible(hello)
+    except ProtocolError as error:
+        print(f"nixadmin: {error}", file=sys.stderr)
+        writer.close()
+        await writer.wait_closed()
+        return 1
+    await client._handle(hello)
     reader_task = asyncio.create_task(client.reader_loop())
     try:
         await client.repl()

@@ -63,7 +63,15 @@ class QuerySession:
         sock.settimeout(READ_TIMEOUT)
         self._sock = sock
         self._file = sock.makefile("r")
-        self._file.readline()  # Hello
+        hello = wire.decode(self._file.readline())
+        if not isinstance(hello, wire.Hello):
+            self.close()
+            raise ProtocolError("daemon did not send Hello first")
+        try:
+            wire.require_compatible(hello)
+        except ProtocolError:
+            self.close()
+            raise
         self._write(wire.Query(id=self.qid, text=self._text, session=self._session_id))
 
     def messages(self) -> Iterator[wire.Message]:

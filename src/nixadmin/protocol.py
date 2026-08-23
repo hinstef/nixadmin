@@ -22,13 +22,14 @@ from typing import ClassVar
 
 from nixadmin.errors import ProtocolError
 
-#: Protocol version, sent in :class:`Hello`. On mismatch a client warns and
-#: proceeds (best-effort) rather than disconnecting — see the spec.
+#: Protocol version range, sent in :class:`Hello`. A client proceeds only when
+#: its version falls inside the daemon's advertised range.
 #: v2 added the timeline messages (``get_timeline`` / ``timeline``); v3 added the
 #: ledger messages (``get_ledger`` / ``ledger``); v4 added cursor pagination to
 #: the timeline. All are additive, so an older
 #: client simply never asks for them.
 VERSION = 4
+MIN_VERSION = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +80,17 @@ class Hello:
     default_chain: str
     modules: list[str]
     version: int = VERSION
+    min_version: int = MIN_VERSION
     TYPE: ClassVar[str] = "hello"
+
+
+def require_compatible(hello: Hello, client_version: int = VERSION) -> None:
+    """Raise when a client cannot safely speak to the connected daemon."""
+    if not hello.min_version <= client_version <= hello.version:
+        raise ProtocolError(
+            "incompatible nixadmin protocol: "
+            f"client v{client_version}, daemon supports v{hello.min_version}–v{hello.version}"
+        )
 
 
 @dataclass

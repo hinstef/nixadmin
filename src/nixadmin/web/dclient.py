@@ -38,7 +38,10 @@ class Daemon:
             sock.settimeout(timeout)
             sock.connect(self.path)
             with sock, sock.makefile("r") as f:
-                f.readline()  # consume Hello
+                hello = wire.decode(f.readline())
+                if not isinstance(hello, wire.Hello):
+                    raise ProtocolError("daemon did not send Hello first")
+                wire.require_compatible(hello)
                 sock.sendall((json.dumps(req) + "\n").encode())
                 for line in f:
                     line = line.strip()
@@ -53,7 +56,7 @@ class Daemon:
                     if isinstance(msg, terminal):
                         result = msg
                         break
-        except OSError:
+        except (OSError, ProtocolError):
             return None, ""
         return result, "".join(deltas)
 

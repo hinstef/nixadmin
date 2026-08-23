@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from nixadmin import protocol as wire
+from nixadmin.errors import ProtocolError
 from nixadmin.log import get_logger
 
 log = get_logger(__name__)
@@ -88,6 +89,13 @@ class DaemonClient:
             return
         if isinstance(msg, wire.Event):
             self.on_event(msg)
+        elif isinstance(msg, wire.Hello):
+            try:
+                wire.require_compatible(msg)
+            except ProtocolError as error:
+                log.error("daemon protocol incompatible", error=str(error))
+                if self._writer is not None:
+                    self._writer.close()
         elif isinstance(msg, wire.Confirm):
             # A fix-it action asked to confirm; the click *was* the confirmation.
             self._send(wire.Respond(id=msg.id, confirmed=True))

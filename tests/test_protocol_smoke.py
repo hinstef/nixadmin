@@ -90,4 +90,25 @@ def test_decode_ignores_extra_fields():
 
 
 def test_hello_defaults_version():
-    assert p.Hello(chains=[], ready={}, default_chain="remote", modules=[]).version == p.VERSION
+    hello = p.Hello(chains=[], ready={}, default_chain="remote", modules=[])
+    assert hello.version == p.VERSION
+    assert hello.min_version == p.MIN_VERSION
+    p.require_compatible(hello)
+
+
+@pytest.mark.parametrize("minimum,maximum", [(5, 5), (1, 3)])
+def test_incompatible_protocol_range_is_rejected(minimum, maximum):
+    hello = p.Hello(
+        chains=[], ready={}, default_chain="remote", modules=[],
+        min_version=minimum, version=maximum,
+    )
+    with pytest.raises(ProtocolError, match="incompatible nixadmin protocol"):
+        p.require_compatible(hello)
+
+
+def test_newer_additive_daemon_can_support_current_client():
+    hello = p.Hello(
+        chains=[], ready={}, default_chain="remote", modules=[],
+        min_version=p.VERSION, version=p.VERSION + 1,
+    )
+    p.require_compatible(hello)
