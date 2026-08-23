@@ -72,6 +72,35 @@ async def test_daemon_cancels_owned_background_tasks(daemon_socket):
     assert not daemon._background_tasks
 
 
+async def test_worktree_cleanup_failure_does_not_block_readiness(
+    daemon_socket, tmp_path, monkeypatch,
+):
+    async def cleanup_fails(_flake_dir):
+        raise RuntimeError("git unavailable")
+
+    notifications: list[str] = []
+    ready = asyncio.Event()
+
+    def record_notification(message: str) -> None:
+        notifications.append(message)
+        if message.startswith("READY=1"):
+            ready.set()
+
+    monkeypatch.setattr("nixadmin.server.actions.prune_abandoned_worktrees", cleanup_fails)
+    monkeypatch.setattr("nixadmin.server.notify", record_notification)
+    daemon = Daemon(Config(
+        socket_path=daemon_socket, events="null", flake_dir=str(tmp_path), autofix=False,
+    ))
+    task = asyncio.create_task(daemon.run())
+    try:
+        async with asyncio.timeout(1):
+            await ready.wait()
+        assert task.done() is False
+    finally:
+        task.cancel()
+        await daemon.aclose()
+
+
 async def test_serve_always_closes_daemon():
     closed = False
 

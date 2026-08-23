@@ -40,7 +40,7 @@ log = get_logger(__name__)
 
 HOME_FILE = "modules/home-manager/default.nix"
 WORKTREE_PREFIX = "nixadmin-wt-"
-WORKTREE_MARKER = ".nixadmin-owner.json"
+WORKTREE_MARKER_SUFFIX = ".owner.json"
 
 # In-memory projection of the pinned nixpkgs attribute names. Built lazily from
 # the local store (no shadow file, no nix-internal DB), held for the daemon's
@@ -286,12 +286,11 @@ async def _validate_in_worktree(flake_dir: str, hostname: str, edited: str) -> t
     """Apply `edited` in a throwaway worktree and prove it evaluates. Returns
     (ok, diff). Never touches the live working tree."""
     wt = tempfile.mkdtemp(prefix=WORKTREE_PREFIX)
+    marker = _worktree_marker(Path(wt))
+    repo_path = await asyncio.to_thread(os.path.realpath, flake_dir)
+    marker.write_text(json.dumps({"repo": repo_path, "pid": os.getpid()}))
     try:
         await _git(flake_dir, "worktree", "add", "--detach", wt, "HEAD")
-        repo_path = await asyncio.to_thread(os.path.realpath, flake_dir)
-        (Path(wt) / WORKTREE_MARKER).write_text(json.dumps({
-            "repo": repo_path, "pid": os.getpid(),
-        }))
         (Path(wt) / HOME_FILE).write_text(edited)
         attr = f"path:{wt}#nixosConfigurations.{hostname}.config.system.build.toplevel.drvPath"
         rc, _out = await _run("nix", "eval", "--raw", attr)
@@ -300,8 +299,12 @@ async def _validate_in_worktree(flake_dir: str, hostname: str, edited: str) -> t
             _rc, diff = await _run("git", "-C", wt, "diff", "--", HOME_FILE)
         return rc == 0, diff
     finally:
-        await _git(flake_dir, "worktree", "remove", "--force", wt)
+        try:
+            await _git(flake_dir, "worktree", "remove", "--force", wt)
+        except NixadminError as error:
+            log.warning("could not remove validation worktree", path=wt, error=str(error))
         shutil.rmtree(wt, ignore_errors=True)
+        marker.unlink(missing_ok=True)
 
 
 async def prune_abandoned_worktrees(
@@ -312,7 +315,9 @@ async def prune_abandoned_worktrees(
     expected_repo = await asyncio.to_thread(os.path.realpath, flake_dir)
     removed = 0
     for candidate in root.glob(f"{WORKTREE_PREFIX}*"):
-        marker = candidate / WORKTREE_MARKER
+        if not candidate.is_dir():
+            continue
+        marker = _worktree_marker(candidate)
         try:
             owner = json.loads(marker.read_text())
             if owner.get("repo") != expected_repo or _pid_alive(int(owner["pid"])):
@@ -323,13 +328,20 @@ async def prune_abandoned_worktrees(
             await _git(flake_dir, "worktree", "remove", "--force", str(candidate))
         except NixadminError as error:
             log.warning("could not prune abandoned worktree", path=str(candidate), error=str(error))
-            continue
         shutil.rmtree(candidate, ignore_errors=True)
+        marker.unlink(missing_ok=True)
         removed += 1
     if removed:
-        await _git(flake_dir, "worktree", "prune")
+        try:
+            await _git(flake_dir, "worktree", "prune")
+        except NixadminError as error:
+            log.warning("could not prune git worktree metadata", error=str(error))
         log.info("pruned abandoned validation worktrees", count=removed)
     return removed
+
+
+def _worktree_marker(path: Path) -> Path:
+    return path.with_name(path.name + WORKTREE_MARKER_SUFFIX)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -345,4 +357,4 @@ def _pid_alive(pid: int) -> bool:
 
 
 async def _git(repo: str, *args: str) -> str:
-    return await _run_checked("git", "-C", repo, *args)
+    return await _run_checked("git", "-C", repo, *args, deadline_s=60.0)

@@ -163,7 +163,10 @@ class Daemon:
 
         await self.monitors.start()
         if self.cfg.flake_dir:
-            await actions.prune_abandoned_worktrees(self.cfg.flake_dir)
+            try:
+                await actions.prune_abandoned_worktrees(self.cfg.flake_dir)
+            except Exception as error:  # noqa: BLE001 — housekeeping is best-effort
+                log.warning("worktree housekeeping failed", error=str(error))
         if self.cfg.event_retention_days > 0:
             await self._prune_events()
             self._spawn(self._event_prune_loop())

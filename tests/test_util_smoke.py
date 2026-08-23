@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 import pytest
 
@@ -27,3 +28,16 @@ async def test_run_timeout_is_bounded():
     with pytest.raises(ExternalProcessError) as caught:
         await run(sys.executable, "-c", "import time; time.sleep(10)", deadline_s=0.02)
     assert caught.value.kind == "timeout"
+
+
+async def test_timeout_kills_pipe_inheriting_descendants():
+    script = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); "
+        "time.sleep(10)"
+    )
+    started = time.monotonic()
+    with pytest.raises(ExternalProcessError) as caught:
+        await run(sys.executable, "-c", script, deadline_s=0.05)
+    assert caught.value.kind == "timeout"
+    assert time.monotonic() - started < 1.0

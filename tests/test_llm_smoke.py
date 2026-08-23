@@ -5,6 +5,9 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
+from nixadmin.errors import BackendError
 from nixadmin.llm import local, remote
 from nixadmin.sdk import SPEC_VERSION, Fetcher, Module
 
@@ -73,3 +76,19 @@ def test_rebuild_tool_constrains_action_enum():
 def test_remote_module_does_not_import_litellm_eagerly():
     code = "import sys; import nixadmin.llm.remote; assert 'litellm' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+async def test_remote_lazy_import_failure_is_a_backend_error(monkeypatch):
+    def missing(_name):
+        raise ModuleNotFoundError("litellm missing")
+
+    monkeypatch.setattr(remote, "import_module", missing)
+
+    async def unused_tool(_name, _args):
+        return ""
+
+    with pytest.raises(BackendError, match="backend unavailable"):
+        async for _ in remote.run(
+            "hello", model="missing", api_base=None, tools=[], run_tool=unused_tool,
+        ):
+            pass

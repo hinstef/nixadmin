@@ -91,7 +91,10 @@ async def run(
     ]
     # Import only when the remote chain is actually invoked. Most nixadmin
     # processes (tray, web, overlay, local-only daemon work) never need LiteLLM.
-    litellm = import_module("litellm")
+    try:
+        litellm = import_module("litellm")
+    except Exception as error:  # noqa: BLE001 — optional backend import boundary
+        raise BackendError(f"remote model backend unavailable: {error}") from error
 
     while True:
         text_acc = ""

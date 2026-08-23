@@ -124,13 +124,13 @@ async def test_prune_abandoned_worktrees_is_marker_and_repo_scoped(tmp_path, mon
     unrelated = tmp_path / "nixadmin-wt-unmarked"
     for path in (dead, active, foreign, unrelated):
         path.mkdir()
-    (dead / actions.WORKTREE_MARKER).write_text(json.dumps({
+    actions._worktree_marker(dead).write_text(json.dumps({
         "repo": str(repo.resolve()), "pid": 999_999_999,
     }))
-    (active / actions.WORKTREE_MARKER).write_text(json.dumps({
+    actions._worktree_marker(active).write_text(json.dumps({
         "repo": str(repo.resolve()), "pid": os.getpid(),
     }))
-    (foreign / actions.WORKTREE_MARKER).write_text(json.dumps({
+    actions._worktree_marker(foreign).write_text(json.dumps({
         "repo": str((tmp_path / "other").resolve()), "pid": 999_999_999,
     }))
     calls: list[tuple[str, ...]] = []
@@ -147,6 +147,26 @@ async def test_prune_abandoned_worktrees_is_marker_and_repo_scoped(tmp_path, mon
     assert not dead.exists()
     assert active.exists() and foreign.exists() and unrelated.exists()
     assert ("worktree", "prune") in calls
+
+
+async def test_prune_recognizes_marker_created_before_git_registration(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    interrupted = tmp_path / "nixadmin-wt-interrupted"
+    interrupted.mkdir()
+    actions._worktree_marker(interrupted).write_text(json.dumps({
+        "repo": str(repo.resolve()), "pid": 999_999_999,
+    }))
+
+    async def fake_git(_repo, *args):
+        if args[:3] == ("worktree", "remove", "--force"):
+            raise NixadminError("not a registered worktree")
+        return ""
+
+    monkeypatch.setattr(actions, "_git", fake_git)
+    assert await actions.prune_abandoned_worktrees(str(repo), temp_root=tmp_path) == 1
+    assert not interrupted.exists()
+    assert not actions._worktree_marker(interrupted).exists()
 
 
 # A stand-in for the real (huge) nixpkgs name list — fuzzy_candidates is the pure
