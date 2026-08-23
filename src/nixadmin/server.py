@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import os
 import time
+from collections.abc import Coroutine
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
@@ -129,6 +130,7 @@ class Daemon:
         self._autofix_seen: set[tuple[str, str]] = set()
         self._autofix_lock = asyncio.Lock()
         self._autofix_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self.sessions = SessionRegistry()
         self.safety = SafetyGate(HELPER_SOCKET)
         self.context = ContextCache([
@@ -166,7 +168,7 @@ class Daemon:
                 (u["unit"], u["scope"]) for u in await remediation.failed_units()
             }
             self._autofix_task = asyncio.create_task(self._autofix_loop())
-        asyncio.create_task(self._readiness_loop())
+        self._spawn(self._readiness_loop())
         async with server:
             await server.serve_forever()
 
@@ -175,11 +177,23 @@ class Daemon:
             self._autofix_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._autofix_task
+        tasks = tuple(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.monitors.aclose()
         close = getattr(self.store, "close", None)
         if callable(close):
             close()
         Path(self.cfg.socket_path).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op
+
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Start daemon-owned work and retain it until completion or shutdown."""
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     # ---- connection handling --------------------------------------------- #
 
@@ -204,8 +218,16 @@ class Daemon:
             pass
         finally:
             self.conns.discard(conn)
+            tasks = tuple(conn.tasks.values())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for pending in conn.pending.values():
+                pending.cancel()
             with contextlib.suppress(Exception):
                 writer.close()
+                await writer.wait_closed()
 
     async def _on_message(self, conn: ClientConn, line: str) -> None:
         try:
@@ -215,8 +237,14 @@ class Daemon:
             return
 
         if isinstance(msg, wire.Query):
-            task = asyncio.create_task(self._dispatch(conn, msg))
+            task = self._spawn(self._dispatch(conn, msg))
             conn.tasks[msg.id] = task
+
+            def forget_query(done: asyncio.Task[None]) -> None:
+                if conn.tasks.get(msg.id) is done:
+                    conn.tasks.pop(msg.id, None)
+
+            task.add_done_callback(forget_query)
         elif isinstance(msg, wire.Cancel):
             pending = conn.tasks.get(msg.id)
             if pending:
@@ -224,17 +252,17 @@ class Daemon:
         elif isinstance(msg, wire.Respond):
             conn.deliver_response(msg)
         elif isinstance(msg, wire.ListFailures):
-            asyncio.create_task(self._list_failures(conn, msg))
+            self._spawn(self._list_failures(conn, msg))
         elif isinstance(msg, wire.RestartUnit):
-            asyncio.create_task(self._restart_unit(conn, msg))
+            self._spawn(self._restart_unit(conn, msg))
         elif isinstance(msg, wire.ExplainUnit):
-            asyncio.create_task(self._explain_unit(conn, msg))
+            self._spawn(self._explain_unit(conn, msg))
         elif isinstance(msg, wire.UnitJournal):
-            asyncio.create_task(self._unit_journal(conn, msg))
+            self._spawn(self._unit_journal(conn, msg))
         elif isinstance(msg, wire.GetTimeline):
-            asyncio.create_task(self._get_timeline(conn, msg))
+            self._spawn(self._get_timeline(conn, msg))
         elif isinstance(msg, wire.GetLedger):
-            asyncio.create_task(self._get_ledger(conn, msg))
+            self._spawn(self._get_ledger(conn, msg))
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from.

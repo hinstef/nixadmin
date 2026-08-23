@@ -54,6 +54,24 @@ async def _read_until(reader: asyncio.StreamReader, type_: str, wait=2.0) -> wir
     raise AssertionError(f"never saw {type_}")
 
 
+async def test_daemon_cancels_owned_background_tasks(daemon_socket):
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    started = asyncio.Event()
+
+    async def waits_forever() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = daemon._spawn(waits_forever())
+    await started.wait()
+    assert task in daemon._background_tasks
+
+    await daemon.aclose()
+
+    assert task.cancelled()
+    assert not daemon._background_tasks
+
+
 async def test_remote_query_round_trip(daemon_socket, monkeypatch):
     # Fake the remote chain so no provider is needed.
     async def fake_run(query, **kwargs) -> AsyncIterator[str]:
