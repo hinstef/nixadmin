@@ -76,6 +76,7 @@ class Store(Protocol):
     async def recent(
         self, limit: int = 100, *, unit: str | None = None,
         kind: str | None = None, since: float | None = None,
+        before_id: int | None = None,
     ) -> list[Event]: ...
 
     async def earliest(self) -> float | None:
@@ -97,6 +98,7 @@ class NullStore:
     async def recent(
         self, limit: int = 100, *, unit: str | None = None,
         kind: str | None = None, since: float | None = None,
+        before_id: int | None = None,
     ) -> list[Event]:
         return []
 
@@ -151,15 +153,17 @@ class EventStore:
     async def recent(
         self, limit: int = 100, *, unit: str | None = None,
         kind: str | None = None, since: float | None = None,
+        before_id: int | None = None,
     ) -> list[Event]:
         try:
-            return await asyncio.to_thread(self._query, limit, unit, kind, since)
+            return await asyncio.to_thread(self._query, limit, unit, kind, since, before_id)
         except sqlite3.Error as e:
             log.warning("event query failed", error=str(e))
             return []
 
     def _query(
         self, limit: int, unit: str | None, kind: str | None, since: float | None,
+        before_id: int | None,
     ) -> list[Event]:
         where: list[str] = []
         params: list[Any] = []
@@ -172,6 +176,9 @@ class EventStore:
         if since is not None:
             where.append("ts >= ?")
             params.append(since)
+        if before_id is not None:
+            where.append("id < ?")
+            params.append(before_id)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(max(1, min(limit, 1000)))
         rows = self._db.execute(

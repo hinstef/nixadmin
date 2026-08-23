@@ -70,6 +70,16 @@ async def test_limit_is_clamped(store):
     assert len(await store.recent(9999)) == 5  # clamped down, but all 5 fit
 
 
+async def test_before_id_is_a_stable_pagination_cursor(store):
+    for i in range(5):
+        await store.append("monitor_event", text=str(i))
+    first = await store.recent(2)
+    second = await store.recent(2, before_id=first[-1]["id"])
+    assert [e["text"] for e in first] == ["4", "3"]
+    assert [e["text"] for e in second] == ["2", "1"]
+    assert not ({e["id"] for e in first} & {e["id"] for e in second})
+
+
 async def test_persists_across_reopen(tmp_path):
     path = tmp_path / "events.db"
     s1 = EventStore(path)

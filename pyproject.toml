@@ -50,9 +50,6 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # not Python types: they must stay quoted (UP037) and read as "undefined names"
 # to a linter that treats them as forward refs (F821).
 "src/nixadmin/tray/sni.py" = ["UP037", "F821", "F722"]
-# page.py is a single embedded HTML/CSS/JS asset string — wrapping its lines to
-# fit Python's limit would only hurt the markup's readability.
-"src/nixadmin/web/page.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -25,9 +25,10 @@ from nixadmin.errors import ProtocolError
 #: Protocol version, sent in :class:`Hello`. On mismatch a client warns and
 #: proceeds (best-effort) rather than disconnecting — see the spec.
 #: v2 added the timeline messages (``get_timeline`` / ``timeline``); v3 added the
-#: ledger messages (``get_ledger`` / ``ledger``). Both are additive, so an older
+#: ledger messages (``get_ledger`` / ``ledger``); v4 added cursor pagination to
+#: the timeline. All are additive, so an older
 #: client simply never asks for them.
-VERSION = 3
+VERSION = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -224,21 +225,25 @@ class Journal:
 class GetTimeline:
     """Client → daemon: request the persisted system-event timeline (failures,
     explanations, restarts, journals, monitor events) for the web hub. Read-only.
-    ``unit`` narrows to one service's history; ``None`` returns everything."""
+    ``unit`` narrows to one service's history; ``before_id`` is an exclusive,
+    append-stable cursor for the next older page."""
 
     id: str
     limit: int = 100
     unit: str | None = None
+    before_id: int | None = None
     TYPE: ClassVar[str] = "get_timeline"
 
 
 @dataclass
 class Timeline:
     """Daemon → client: recent timeline events, newest first. Each entry is a dict
-    ``{id, ts, kind, unit, scope, severity, text, meta}`` (see nixadmin.store)."""
+    ``{id, ts, kind, unit, scope, severity, text, meta}`` (see nixadmin.store).
+    ``next_cursor`` is present only when an older page exists."""
 
     id: str
     events: list[dict[str, object]]
+    next_cursor: int | None = None
     TYPE: ClassVar[str] = "timeline"
 
 

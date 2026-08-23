@@ -264,8 +264,16 @@ class Daemon:
 
     async def _get_timeline(self, conn: ClientConn, msg: wire.GetTimeline) -> None:
         """Read-only: the persisted event timeline for the web hub."""
-        events = await self.store.recent(msg.limit, unit=msg.unit)
-        await conn.send(wire.Timeline(id=msg.id, events=events))
+        # Fetch one extra row so the client can offer an Older button without a
+        # separate count query. IDs are append-only, making this cursor stable
+        # while new events arrive at the head of the timeline.
+        limit = max(1, min(msg.limit, 1000))
+        rows = await self.store.recent(limit + 1, unit=msg.unit, before_id=msg.before_id)
+        events = rows[:limit]
+        next_cursor = int(events[-1]["id"]) if len(rows) > limit and events else None
+        await conn.send(wire.Timeline(
+            id=msg.id, events=events, next_cursor=next_cursor,
+        ))
 
     async def _get_ledger(self, conn: ClientConn, msg: wire.GetLedger) -> None:
         """Read-only: the kept-well ledger — the looked-after-itself streak plus a

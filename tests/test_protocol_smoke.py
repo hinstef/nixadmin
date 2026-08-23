@@ -36,13 +36,13 @@ def test_roundtrip_every_message_type():
         p.UnitJournal(id="q1", unit="cups.service", scope="system"),
         p.Journal(id="q1", unit="cups.service", text="line1\nline2"),
         p.GetTimeline(id="q1"),
-        p.GetTimeline(id="q2", limit=50, unit="cups.service"),
+        p.GetTimeline(id="q2", limit=50, unit="cups.service", before_id=42),
         p.Timeline(id="q1", events=[
             {"id": 3, "ts": 1.0, "kind": "explanation", "unit": "cups.service",
              "scope": "system", "severity": None, "text": "it broke",
              "meta": {"model": "qwen2.5:3b"}},
         ]),
-        p.Timeline(id="q2", events=[]),
+        p.Timeline(id="q2", events=[], next_cursor=12),
         p.GetLedger(id="q1"),
         p.Ledger(id="q1", data={
             "streak_days": 23, "healthy_now": True, "since_ts": 1.0,

@@ -69,13 +69,19 @@ class Daemon:
             terminal=(wire.Journal,))
         return msg.text if isinstance(msg, wire.Journal) else None
 
-    def timeline(self, limit: int = 100, unit: str | None = None) -> list[dict[str, object]]:
-        """The persisted event timeline (newest first), or ``[]`` if unreachable."""
+    def timeline(
+        self, limit: int = 10, unit: str | None = None, before_id: int | None = None,
+    ) -> tuple[list[dict[str, object]], int | None]:
+        """One stable timeline page (newest first) and its older-page cursor."""
         req: dict[str, object] = {"type": "get_timeline", "id": _id(), "limit": limit}
         if unit:
             req["unit"] = unit
+        if before_id is not None:
+            req["before_id"] = before_id
         msg, _ = self._roundtrip(req, terminal=(wire.Timeline,))
-        return msg.events if isinstance(msg, wire.Timeline) else []
+        if isinstance(msg, wire.Timeline):
+            return msg.events, msg.next_cursor
+        return [], None
 
     def ledger(self) -> dict[str, object] | None:
         """The kept-well ledger summary, or ``None`` if the daemon is unreachable."""

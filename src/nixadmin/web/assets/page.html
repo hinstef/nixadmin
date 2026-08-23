@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="nixadmin-token" content="__NIXADMIN_TOKEN__">
+  <title>nixadmin</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<header>
+  <div class="brand">nixadmin</div>
+  <div id="status"><span class="dot down"></span>connecting…</div>
+</header>
+<main>
+  <section id="invoke">
+    <form id="ask" autocomplete="off">
+      <input id="ask-input" type="text" placeholder="What would you like?" aria-label="Ask nixadmin">
+      <button type="submit">Go</button>
+    </form>
+    <div id="chips"></div>
+    <div class="hint">Ask in plain words · press <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd> to focus</div>
+    <div id="invoke-result" aria-live="polite"></div>
+  </section>
+  <section id="kept-sec" hidden><div class="kept" id="kept"></div></section>
+  <section>
+    <h2>Now</h2>
+    <div id="units"></div>
+  </section>
+  <section>
+    <div class="section-head">
+      <h2>Activity</h2>
+      <button id="new-activity" class="quiet" hidden>New activity</button>
+    </div>
+    <ol class="timeline" id="timeline"></ol>
+    <nav id="timeline-nav" aria-label="Timeline pages">
+      <button id="newer" disabled>Newer</button>
+      <span id="page-label">Latest</span>
+      <button id="older" disabled>Older</button>
+    </nav>
+  </section>
+</main>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

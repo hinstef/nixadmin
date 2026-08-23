@@ -26,10 +26,9 @@ from nixadmin.web.session import QuerySession, sse
 log = get_logger(__name__)
 
 DEFAULT_PORT = 7677
-# CSP: no external anything; inline style/script (the page is self-contained);
-# fetch only same-origin. Belt-and-braces on top of the token + Origin checks.
+# CSP: no external anything; static assets and API calls are same-origin.
 _CSP = (
-    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+    "default-src 'none'; style-src 'self'; script-src 'self'; "
     "connect-src 'self'; base-uri 'none'; form-action 'none'"
 )
 
@@ -123,6 +122,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._write(200, "text/html; charset=utf-8",
                         page.render(self.app.token).encode(), {"Content-Security-Policy": _CSP})
+        elif parsed.path.startswith("/assets/"):
+            # Assets contain no state or token. Host validation still prevents a
+            # DNS-rebinding origin from using this loopback service as a file host.
+            if not security.host_ok(self.headers.get("Host"), self.app.port):
+                self._json(403, {"error": "bad host"})
+                return
+            asset = page.asset(parsed.path.removeprefix("/assets/"))
+            if asset is None:
+                self._json(404, {"error": "not found"})
+                return
+            ctype, body = asset
+            self._write(200, ctype, body)
         elif parsed.path == "/api/state":
             if not self._guard(qs, mutation=False):
                 return
@@ -139,10 +150,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             tl_unit = (qs.get("unit") or [""])[0] or None
             try:
-                limit = int((qs.get("limit") or ["100"])[0])
+                limit = int((qs.get("limit") or ["10"])[0])
             except ValueError:
-                limit = 100
-            self._json(200, {"events": self.app.dclient.timeline(limit, tl_unit)})
+                limit = 10
+            try:
+                before = int((qs.get("before") or [""])[0])
+            except ValueError:
+                before = None
+            events, next_cursor = self.app.dclient.timeline(limit, tl_unit, before)
+            self._json(200, {"events": events, "next_cursor": next_cursor})
         elif parsed.path == "/api/ledger":
             if not self._guard(qs, mutation=False):
                 return
