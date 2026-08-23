@@ -399,10 +399,14 @@ in
       wantedBy = [ "default.target" ];
       environment = daemonEnv;
       serviceConfig = {
-        Type = "simple";
+        Type = "notify";
+        NotifyAccess = "main";
         ExecStart = "${daemonPython}/bin/nixadmin-daemon";
         Restart = "on-failure";
-        RestartSec = "5s";
+        RestartSec = "2s";
+        RestartSteps = 5;
+        RestartMaxDelaySec = "30s";
+        WatchdogSec = "60s";
       };
     };
 

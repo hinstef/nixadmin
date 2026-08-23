@@ -36,6 +36,7 @@ from nixadmin.safety import SafetyGate
 from nixadmin.sdk import Module
 from nixadmin.session import SessionRegistry
 from nixadmin.store import make_store
+from nixadmin.supervision import notify, watchdog_interval
 
 log = logmod.get_logger(__name__)
 
@@ -174,10 +175,14 @@ class Daemon:
             }
             self._autofix_task = asyncio.create_task(self._autofix_loop())
         self._spawn(self._readiness_loop())
+        if watchdog_interval() is not None:
+            self._spawn(self._watchdog_loop())
+        notify("READY=1\nSTATUS=Listening for requests")
         async with server:
             await server.serve_forever()
 
     async def aclose(self) -> None:
+        notify("STOPPING=1\nSTATUS=Shutting down")
         if self._autofix_task is not None:
             self._autofix_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -783,6 +788,14 @@ class Daemon:
         while True:
             await asyncio.sleep(EVENT_PRUNE_INTERVAL)
             await self._prune_events()
+
+    async def _watchdog_loop(self) -> None:
+        interval = watchdog_interval()
+        if interval is None:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            notify("WATCHDOG=1")
 
     async def _prune_events(self) -> None:
         cutoff = time.time() - self.cfg.event_retention_days * 24 * 60 * 60
