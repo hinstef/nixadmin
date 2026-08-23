@@ -7,16 +7,49 @@ checks that must never regress: token, Host, and Origin gating.
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from nixadmin import protocol as wire
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
-from nixadmin.web.server import _remove_url_file, _to_sse, _url_file_lock, _write_url_file
+from nixadmin.web.server import (
+    MAX_ACTIVE_SESSIONS,
+    MAX_REQUEST_BODY_BYTES,
+    _content_length,
+    _remove_url_file,
+    _RequestTooLarge,
+    _to_sse,
+    _url_file_lock,
+    _WebServer,
+    _write_url_file,
+)
 from nixadmin.web.session import QuerySession, sse
 
 PORT = 7677
+
+
+def test_request_body_limit_rejects_oversize_and_negative_lengths():
+    assert _content_length(None) == 0
+    assert _content_length("-1") == 0
+    assert _content_length("not-an-int") == 0
+    assert _content_length(str(MAX_REQUEST_BODY_BYTES)) == MAX_REQUEST_BODY_BYTES
+    with pytest.raises(_RequestTooLarge):
+        _content_length(str(MAX_REQUEST_BODY_BYTES + 1))
+
+
+def test_session_registry_rejects_duplicates_and_caps_capacity(tmp_path):
+    server = _WebServer(("127.0.0.1", 0), "token", Daemon(str(tmp_path / "daemon.sock")))
+    try:
+        first = SimpleNamespace(qid="same")
+        assert server.register_session(first) == "ok"  # type: ignore[arg-type]
+        assert server.register_session(SimpleNamespace(qid="same")) == "duplicate"  # type: ignore[arg-type]
+        for index in range(1, MAX_ACTIVE_SESSIONS):
+            assert server.register_session(SimpleNamespace(qid=str(index))) == "ok"  # type: ignore[arg-type]
+        assert server.register_session(SimpleNamespace(qid="overflow")) == "full"  # type: ignore[arg-type]
+    finally:
+        server.server_close()
 
 
 def test_url_file_is_atomic_and_cleanup_is_instance_owned(tmp_path, monkeypatch):

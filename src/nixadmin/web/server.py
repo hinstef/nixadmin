@@ -29,6 +29,9 @@ from nixadmin.web.session import QuerySession, sse
 log = get_logger(__name__)
 
 DEFAULT_PORT = 7677
+MAX_REQUEST_BODY_BYTES = 64 * 1024
+MAX_QUERY_CHARS = 4_000
+MAX_ACTIVE_SESSIONS = 16
 # CSP: no external anything; static assets and API calls are same-origin.
 _CSP = (
     "default-src 'none'; style-src 'self'; script-src 'self'; "
@@ -183,6 +186,9 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "empty query"})
             return
+        if len(text) > MAX_QUERY_CHARS:
+            self._json(413, {"error": "query too large"})
+            return
         qid = (qs.get("qid") or [""])[0].strip() or uuid.uuid4().hex[:12]
         session_id = (qs.get("session") or ["web"])[0]
         session = QuerySession(self.app.dclient.path, qid, text, session_id)
@@ -191,10 +197,15 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._json(503, {"error": "daemon unreachable"})
             return
-        self.app.register_session(session)
+        registration = self.app.register_session(session)
+        if registration != "ok":
+            session.close()
+            code = 409 if registration == "duplicate" else 503
+            self._json(code, {"error": "query already exists" if code == 409 else "busy"})
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.send_header("X-Accel-Buffering", "no")  # defeat proxy buffering
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -222,7 +233,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._guard(parse_qs(parsed.query), mutation=True):
             return
-        body = self._body()
+        try:
+            body = self._body()
+        except _RequestTooLarge:
+            self._json(413, {"error": "request body too large"})
+            return
         if parsed.path in ("/api/respond", "/api/cancel"):
             self._invoke_control(parsed.path, body)
             return
@@ -254,12 +269,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, object]:
         try:
-            n = int(self.headers.get("Content-Length", "0"))
+            n = _content_length(self.headers.get("Content-Length"))
             raw = self.rfile.read(n) if n > 0 else b"{}"
             parsed = json.loads(raw or b"{}")
             return parsed if isinstance(parsed, dict) else {}
         except (ValueError, json.JSONDecodeError):
             return {}
+
+
+class _RequestTooLarge(ValueError):
+    pass
+
+
+def _content_length(value: str | None) -> int:
+    try:
+        length = int(value or "0")
+    except ValueError:
+        return 0
+    if length < 0:
+        return 0
+    if length > MAX_REQUEST_BODY_BYTES:
+        raise _RequestTooLarge
+    return length
 
 
 class _WebServer(ThreadingHTTPServer):
@@ -275,9 +306,14 @@ class _WebServer(ThreadingHTTPServer):
         self.sessions: dict[str, QuerySession] = {}
         self._sessions_lock = threading.Lock()
 
-    def register_session(self, s: QuerySession) -> None:
+    def register_session(self, s: QuerySession) -> str:
         with self._sessions_lock:
+            if s.qid in self.sessions:
+                return "duplicate"
+            if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
+                return "full"
             self.sessions[s.qid] = s
+            return "ok"
 
     def drop_session(self, qid: str) -> None:
         with self._sessions_lock:

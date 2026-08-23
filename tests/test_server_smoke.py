@@ -14,7 +14,8 @@ import pytest
 from nixadmin import protocol as wire
 from nixadmin import redact, remediation
 from nixadmin.config import Config
-from nixadmin.server import Daemon, _serve
+from nixadmin.errors import ProtocolError
+from nixadmin.server import ClientConn, Daemon, _serve
 
 
 class FakeConn:
@@ -34,6 +35,22 @@ class FakeConn:
 
     def deltas(self) -> str:
         return "".join(m.text for m in self.sent if isinstance(m, wire.Delta))
+
+
+async def test_client_send_is_bounded(monkeypatch):
+    class StalledWriter:
+        def write(self, _payload):
+            pass
+
+        async def drain(self):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("nixadmin.server.CLIENT_SEND_TIMEOUT_S", 0.01)
+    conn = ClientConn(asyncio.StreamReader(), StalledWriter())  # type: ignore[arg-type]
+    with pytest.raises(TimeoutError):
+        await conn.send(wire.Ready(chain="local"))
+    with pytest.raises(ProtocolError, match="wire limit"):
+        await conn.send(wire.Delta(id="x", text="x" * 70_000))
 
 
 @pytest.fixture

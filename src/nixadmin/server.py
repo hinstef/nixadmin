@@ -25,7 +25,7 @@ from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
 from nixadmin.context import ContextCache
-from nixadmin.errors import NixadminError
+from nixadmin.errors import NixadminError, ProtocolError
 from nixadmin.history import make_history
 from nixadmin.llm import local as local_llm
 from nixadmin.llm import remote as remote_llm
@@ -46,6 +46,8 @@ HELPER_SOCKET = "/run/nixadmin-helper.sock"
 # failures (the services monitor is system-bus only) and observes recovery.
 AUTOFIX_POLL_INTERVAL = 15.0
 EVENT_PRUNE_INTERVAL = 24 * 60 * 60.0
+MAX_WIRE_MESSAGE_BYTES = 64 * 1024
+CLIENT_SEND_TIMEOUT_S = 10.0
 
 # Friendly names for the redaction placeholders, so the escalation confirm can say
 # *what kind* of thing was stripped without ever echoing the secret itself.
@@ -87,10 +89,16 @@ class ClientConn:
         self.pending: dict[str, asyncio.Future[wire.Respond]] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.owned_tasks: set[asyncio.Task[None]] = set()
+        self._send_lock = asyncio.Lock()
 
     async def send(self, msg: wire.Message) -> None:
-        self.writer.write(wire.encode(msg).encode())
-        await self.writer.drain()
+        payload = wire.encode(msg).encode()
+        if len(payload) > MAX_WIRE_MESSAGE_BYTES:
+            raise ProtocolError("outgoing message exceeds wire limit")
+        async with self._send_lock:
+            self.writer.write(payload)
+            async with asyncio.timeout(CLIENT_SEND_TIMEOUT_S):
+                await self.writer.drain()
 
     async def confirm(self, qid: str, text: str) -> bool:
         await self.send(wire.Confirm(id=qid, text=text))
@@ -157,7 +165,9 @@ class Daemon:
     async def run(self) -> None:
         sock = self.cfg.socket_path
         Path(sock).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op at startup
-        server = await asyncio.start_unix_server(self._handle_client, path=sock)
+        server = await asyncio.start_unix_server(
+            self._handle_client, path=sock, limit=MAX_WIRE_MESSAGE_BYTES,
+        )
         os.chmod(sock, 0o660)
         log.info("listening", socket=sock, default_chain=self.cfg.default_chain)
 
@@ -239,7 +249,8 @@ class Daemon:
                 if not line:
                     continue
                 await self._on_message(conn, line)
-        except (asyncio.IncompleteReadError, ConnectionResetError):
+        except (asyncio.IncompleteReadError, ConnectionResetError, ValueError) as error:
+            log.warning("client connection closed", error=str(error))
             pass
         finally:
             self.conns.discard(conn)
