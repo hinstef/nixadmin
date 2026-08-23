@@ -169,6 +169,41 @@ async def test_stalled_helper_times_out(sock, monkeypatch):
         await server.wait_closed()
 
 
+async def test_helper_close_error_does_not_mask_protocol_error(monkeypatch):
+    class BadReader:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if hasattr(self, "sent"):
+                raise StopAsyncIteration
+            self.sent = True
+            return b"not-json\n"
+
+    class ResetWriter:
+        def write(self, _data):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            raise ConnectionResetError("reset during cleanup")
+
+    async def connect(_path):
+        return BadReader(), ResetWriter()
+
+    monkeypatch.setattr("nixadmin.safety.asyncio.open_unix_connection", connect)
+    with pytest.raises(SafetyError, match="malformed JSON"):
+        await SafetyGate("unused").apply_switch()
+
+
 async def test_context_cache_assembles_and_caches():
     calls = {"n": 0}
 

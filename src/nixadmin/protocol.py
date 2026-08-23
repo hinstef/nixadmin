@@ -86,6 +86,14 @@ class Hello:
 
 def require_compatible(hello: Hello, client_version: int = VERSION) -> None:
     """Raise when a client cannot safely speak to the connected daemon."""
+    if (
+        isinstance(hello.min_version, bool)
+        or not isinstance(hello.min_version, int)
+        or isinstance(hello.version, bool)
+        or not isinstance(hello.version, int)
+        or hello.min_version > hello.version
+    ):
+        raise ProtocolError("daemon advertised an invalid protocol version range")
     if not hello.min_version <= client_version <= hello.version:
         raise ProtocolError(
             "incompatible nixadmin protocol: "

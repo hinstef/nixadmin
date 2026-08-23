@@ -14,6 +14,7 @@ daemon (a user service) never holds privilege itself.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -136,7 +137,8 @@ class SafetyGate:
         finally:
             if writer is not None:
                 writer.close()
-                await writer.wait_closed()
+                with contextlib.suppress(ConnectionError, OSError):
+                    await writer.wait_closed()
 
         if exit_code is None:
             raise SafetyError("privileged helper disconnected without a final exit status")

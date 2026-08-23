@@ -6,9 +6,90 @@ the menu model, and that DBusMenu builds a well-formed layout from a model.
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
+from nixadmin import protocol as wire
 from nixadmin.tray import icons
+from nixadmin.tray.client import DaemonClient
 from nixadmin.tray.main import INVOKE_ID, QUIT_ID, _menu_model, _tooltip
 from nixadmin.tray.sni import DBusMenu, MenuEntry
+
+
+async def test_tray_connects_only_after_valid_hello(tmp_path, monkeypatch):
+    path = str(tmp_path / "daemon.sock")
+    release = asyncio.Event()
+
+    async def peer(_reader, writer):
+        await release.wait()
+        writer.write(wire.encode(wire.Hello(
+            chains=[], ready={}, default_chain="remote", modules=[])).encode())
+        await writer.drain()
+        await _reader.read()
+        writer.close()
+
+    server = await asyncio.start_unix_server(peer, path=path)
+    states: list[bool] = []
+    connected = asyncio.Event()
+
+    def on_state(state: bool) -> None:
+        states.append(state)
+        if state:
+            connected.set()
+
+    client = DaemonClient(path, on_state=on_state)
+    task = asyncio.create_task(client.run())
+    try:
+        await asyncio.sleep(0.03)
+        assert True not in states
+        release.set()
+        async with asyncio.timeout(1):
+            await connected.wait()
+        assert states == [True]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize("reply", ["incompatible", "not-hello", "silent"])
+async def test_tray_rejects_invalid_or_missing_hello(tmp_path, monkeypatch, reply):
+    path = str(tmp_path / "daemon.sock")
+    monkeypatch.setattr("nixadmin.tray.client.HANDSHAKE_TIMEOUT_S", 0.02)
+    monkeypatch.setattr("nixadmin.tray.client.RECONNECT_DELAY_S", 1.0)
+
+    async def peer(_reader, writer):
+        if reply == "incompatible":
+            message = wire.Hello(
+                chains=[], ready={}, default_chain="remote", modules=[],
+                min_version=wire.VERSION + 1, version=wire.VERSION + 1,
+            )
+            writer.write(wire.encode(message).encode())
+        elif reply == "not-hello":
+            writer.write(wire.encode(wire.Ready(chain="local")).encode())
+        else:
+            await asyncio.sleep(0.1)
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(peer, path=path)
+    states: list[bool] = []
+    client = DaemonClient(path, on_state=states.append)
+    task = asyncio.create_task(client.run())
+    try:
+        await asyncio.sleep(0.08)
+        assert not client.connected
+        assert True not in states
+        assert client._writer is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        server.close()
+        await server.wait_closed()
 
 
 def test_disc_argb_dimensions_and_coverage():

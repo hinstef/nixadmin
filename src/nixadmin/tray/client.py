@@ -8,6 +8,7 @@ restarts the daemon): the run loop reconnects, and the tray simply shows grey
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import uuid
 from collections.abc import Callable
@@ -21,6 +22,7 @@ log = get_logger(__name__)
 
 RECONNECT_DELAY_S = 3.0
 REQUEST_TIMEOUT_S = 10.0
+HANDSHAKE_TIMEOUT_S = 5.0
 EXPLAIN_TIMEOUT_S = 90.0  # the local model may cold-start (~6s) or be slow to stream
 
 
@@ -61,6 +63,23 @@ class DaemonClient:
                 self._set_connected(False)
                 await asyncio.sleep(RECONNECT_DELAY_S)
                 continue
+            try:
+                raw = await asyncio.wait_for(reader.readline(), HANDSHAKE_TIMEOUT_S)
+                if not raw:
+                    raise ProtocolError("daemon disconnected before Hello")
+                hello = wire.decode(raw.decode(errors="replace").strip())
+                if not isinstance(hello, wire.Hello):
+                    raise ProtocolError("daemon did not send Hello first")
+                wire.require_compatible(hello)
+            except (TimeoutError, ProtocolError, OSError) as error:
+                log.warning("daemon handshake failed", error=str(error))
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+                self._set_connected(False)
+                await asyncio.sleep(RECONNECT_DELAY_S)
+                continue
+
             self._writer = writer
             self._set_connected(True)
             try:
@@ -89,13 +108,6 @@ class DaemonClient:
             return
         if isinstance(msg, wire.Event):
             self.on_event(msg)
-        elif isinstance(msg, wire.Hello):
-            try:
-                wire.require_compatible(msg)
-            except ProtocolError as error:
-                log.error("daemon protocol incompatible", error=str(error))
-                if self._writer is not None:
-                    self._writer.close()
         elif isinstance(msg, wire.Confirm):
             # A fix-it action asked to confirm; the click *was* the confirmation.
             self._send(wire.Respond(id=msg.id, confirmed=True))

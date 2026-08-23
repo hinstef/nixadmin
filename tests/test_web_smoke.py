@@ -214,6 +214,34 @@ def test_query_session_graceful_when_socket_absent(tmp_path):
         s.open()
 
 
+@pytest.mark.parametrize("payload", [b"not-json\n", b""])
+def test_query_session_closes_on_bad_handshake(tmp_path, payload):
+    import socket as _socket
+
+    sock_path = str(tmp_path / "bad-daemon.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+
+    def bad_daemon() -> None:
+        conn, _ = server.accept()
+        with conn:
+            if payload:
+                conn.sendall(payload)
+
+    worker = threading.Thread(target=bad_daemon)
+    worker.start()
+    session = QuerySession(sock_path, "qid", "hello", "web")
+    try:
+        with pytest.raises(wire.ProtocolError):
+            session.open()
+        assert session._closed
+        assert session._sock is not None and session._sock.fileno() == -1
+    finally:
+        worker.join(timeout=1)
+        server.close()
+
+
 def test_query_session_confirm_round_trip(tmp_path):
     """Drive a full confirm exchange against a fake daemon over a real socket."""
     import socket as _socket

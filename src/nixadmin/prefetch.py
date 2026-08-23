@@ -55,8 +55,10 @@ def _format_result(module: Module, fetcher: Fetcher, output: str) -> str:
 def _truncate(text: str, limit: int, source: str) -> str:
     if len(text) <= limit:
         return text
-    omitted = len(text) - limit
-    return f"{text[:limit]}\n[… {omitted} characters omitted from {source} …]"
+    marker = f"\n[… output truncated: {source} …]"
+    if len(marker) >= limit:
+        return marker[:limit]
+    return text[:limit - len(marker)] + marker
 
 
 async def _run(fetcher: Fetcher) -> str:

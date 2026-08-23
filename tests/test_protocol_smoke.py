@@ -112,3 +112,13 @@ def test_newer_additive_daemon_can_support_current_client():
         min_version=p.VERSION, version=p.VERSION + 1,
     )
     p.require_compatible(hello)
+
+
+@pytest.mark.parametrize("minimum,maximum", [("4", 4), (4, None), (True, 4), (5, 4)])
+def test_malformed_protocol_ranges_are_protocol_errors(minimum, maximum):
+    hello = p.Hello(
+        chains=[], ready={}, default_chain="remote", modules=[],
+        min_version=minimum, version=maximum,  # type: ignore[arg-type]
+    )
+    with pytest.raises(ProtocolError, match="invalid protocol version range"):
+        p.require_compatible(hello)

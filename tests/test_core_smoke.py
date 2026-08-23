@@ -74,7 +74,7 @@ async def test_prefetch_hides_multiline_command_and_bounds_output(monkeypatch):
     out = await prefetch([mod])
     assert command not in out and "second line" not in out
     assert "## system/large — System summary" in out
-    assert "characters omitted" in out
+    assert "output truncated" in out
     assert "\x1b" not in out and "\x00" not in out
 
 
@@ -93,5 +93,5 @@ async def test_prefetch_has_a_total_context_bound(monkeypatch):
     monkeypatch.setattr("nixadmin.prefetch._run", large)
     out = await prefetch(modules)
     assert out.startswith("## m0/data")
-    assert "characters omitted from prefetch context" in out
-    assert len(out) < MAX_PREFETCH_CHARS + 100
+    assert "output truncated: prefetch context" in out
+    assert len(out) <= MAX_PREFETCH_CHARS
