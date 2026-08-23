@@ -2,8 +2,19 @@
 assets, no frameworks. The token is injected server-side into a page only ever
 served on a valid token; the page then sends it as a header on every API call.
 
-Two sections:
+Laid out as a single pane of glass — one prompt handles everything, and the
+status you would otherwise go looking for sits under it:
 
+* **Ask** — the invoke bar, first thing on the page and focused on load. Common
+  actions sit beneath it as chips, which only *type for you*: a chip is a seeded
+  prompt taking the same route to the daemon as anything you type, never a
+  privileged shortcut past the confirm gate. This is the answer to "I don't want
+  to open a store to install something" — installing is a sentence, not a place.
+* **Replies** — task cards, newest first, capped at a handful and dismissable.
+  They stack so a slow install stays visible while you ask something else; the cap
+  and the Dismiss keep it a working record rather than a chat transcript, which
+  ``docs/ux.md`` rules out (design for silence: foreground the machine, not the
+  assistant). A running card can be stopped, which cancels the query daemon-side.
 * **Now** — current health and the failed units, with per-unit Restart / Explain /
   Journal. This section refreshes on a timer; refreshing only ever re-renders
   *itself*, so it can no longer wipe out detail the way the old single-list page
@@ -15,6 +26,11 @@ Two sections:
 
 The tray deep-links here with ``?explain=<unit>&scope=<scope>`` to run and show an
 explanation in the hub instead of a transient desktop notification.
+
+This page is the *prototype* of the surface, not its final form — the intended
+shape is a summonable spotlight-style overlay (possibly still this page, wrapped).
+Keeping the whole interaction in HTML/JS with no build step is what makes that
+cheap to iterate on.
 """
 
 from __future__ import annotations
@@ -57,18 +73,28 @@ _PAGE = """<!DOCTYPE html>
   .kept-head { font-size: 17px; font-weight: 600; color: #cfe9d6; }
   .kept.attention .kept-head { color: #e6cfa0; }
   .kept-tally { margin-top: 4px; font-size: 13px; color: #8a9a8f; }
-  /* invoke bar */
-  #ask { display: flex; gap: 8px; margin: 4px 0 6px; }
-  #ask input { flex: 1; font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #333844; background: #1b1e25; color: #e6e8ee; }
-  #ask input:focus { outline: none; border-color: #4b5566; background: #1e2229; }
-  #ask button { font: inherit; padding: 0 16px; border-radius: 8px; border: 1px solid #333844; background: #232733; color: #e6e8ee; cursor: pointer; }
+  /* invoke surface — the way in. One line for everything, no menu to learn. */
+  #ask { display: flex; gap: 8px; margin: 4px 0 10px; }
+  #ask input { flex: 1; font: inherit; font-size: 16px; padding: 13px 16px; border-radius: 10px; border: 1px solid #333844; background: #1b1e25; color: #e6e8ee; }
+  #ask input::placeholder { color: #666e7d; }
+  #ask input:focus { outline: none; border-color: #4b5566; background: #1e2229; box-shadow: 0 0 0 3px #4b556633; }
+  #ask button { font: inherit; padding: 0 18px; border-radius: 10px; border: 1px solid #333844; background: #232733; color: #e6e8ee; cursor: pointer; }
   #ask button:hover { background: #2b3040; }
-  .card { border: 1px solid #262a33; border-radius: 8px; padding: 12px 14px; margin: 8px 0 4px; background: #1b1e25; }
+  #chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 999px; border: 1px solid #2c313d; background: #1a1d24; color: #a6adba; cursor: pointer; }
+  .chip:hover { background: #232733; color: #e6e8ee; border-color: #3c4353; }
+  .hint { font-size: 12px; color: #5c6472; margin: 10px 0 2px; }
+  kbd { font: inherit; font-size: 11px; font-family: ui-monospace, monospace; border: 1px solid #333844; border-radius: 4px; padding: 0 5px; color: #8b93a3; }
+  /* task cards — the reply window. Stacked newest-first, capped, dismissable:
+     a record of what you asked for, deliberately not a chat transcript. */
+  .card { border: 1px solid #262a33; border-radius: 8px; padding: 12px 14px; margin: 10px 0 4px; background: #1b1e25; }
   .card .q { font-size: 13px; color: #9aa0ac; margin-bottom: 6px; }
   .card .answer { white-space: pre-wrap; word-break: break-word; }
   .card .work { color: #8b93a3; font-size: 13px; }
   .card .prompt { margin-top: 8px; white-space: pre-wrap; }
   .card .choices { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card .foot { margin-top: 10px; display: flex; gap: 8px; }
+  .card .foot button { font-size: 12px; padding: 3px 10px; color: #8b93a3; }
   .card.failed { border-color: #b04b4b; }
   /* timeline */
   ol.tl { list-style: none; margin: 0; padding: 0; }
@@ -90,15 +116,17 @@ _PAGE = """<!DOCTYPE html>
   <div id="status"><span class="dot down"></span>connecting…</div>
 </header>
 <main>
-  <section id="kept-sec" hidden>
-    <div class="kept" id="kept"></div>
-  </section>
-  <section>
+  <section id="invoke">
     <form id="ask" autocomplete="off">
       <input id="ask-input" type="text" placeholder="What would you like? (e.g. install spotify)" aria-label="Ask nixadmin">
       <button type="submit">Go</button>
     </form>
+    <div id="chips"></div>
+    <div class="hint">Ask in plain words — press <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd> to come back here.</div>
     <div id="invoke-result"></div>
+  </section>
+  <section id="kept-sec" hidden>
+    <div class="kept" id="kept"></div>
   </section>
   <section>
     <h2 class="sec">Now</h2>
@@ -250,18 +278,32 @@ function eventRow(ev) {
 
 // ---- invoke bar: talk to the agent ----------------------------------------
 const SESSION = "web-" + Math.random().toString(36).slice(2, 10);
+// Cards stack so a slow install stays visible while you ask something else, but
+// the stack is capped — this is a short working record, not a chat history.
+const MAX_CARDS = 6;
 function newQid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function ctl(path, body) { return api(path, { method: "POST", body: JSON.stringify(body) }); }
 
+// Drop the oldest finished cards. A running one is never evicted — it still has
+// something to say, and its confirm buttons may be the only way to finish it.
+function trimCards(box) {
+  const cards = Array.from(box.children);
+  for (let i = MAX_CARDS; i < cards.length; i++) {
+    if (!cards[i].dataset.running) cards[i].remove();
+  }
+}
+
 function ask(text) {
   const box = document.getElementById("invoke-result");
-  box.textContent = "";                       // one ephemeral card, not a transcript
   const card = el("div", "card");
+  card.dataset.running = "1";
   card.appendChild(el("div", "q", text));
   const work = el("div", "work", "Working\\u2026"); card.appendChild(work);
   const answer = el("div", "answer"); card.appendChild(answer);
   const extra = el("div"); card.appendChild(extra);
-  box.appendChild(card);
+  const foot = el("div", "foot"); card.appendChild(foot);
+  box.prepend(card);                          // newest first — no scrolling to find it
+  trimCards(box);
 
   const qid = newQid();
   let finished = false;
@@ -269,7 +311,23 @@ function ask(text) {
               "&qid=" + qid + "&session=" + SESSION +
               "&text=" + encodeURIComponent(text);
   const es = new EventSource(url);
-  const stop = () => { finished = true; es.close(); };
+
+  // Stop asks the daemon to abandon the query; it answers with a `done`, so the
+  // stream closes through the normal path rather than being dropped on the floor.
+  const bStop = el("button", null, "Stop");
+  bStop.onclick = () => { bStop.disabled = true; work.textContent = "Stopping\\u2026"; ctl("/api/cancel", { qid: qid }); };
+  foot.appendChild(bStop);
+
+  const stop = () => {
+    finished = true;
+    es.close();
+    delete card.dataset.running;
+    foot.textContent = "";
+    const bDismiss = el("button", null, "Dismiss");
+    bDismiss.onclick = () => card.remove();
+    foot.appendChild(bDismiss);
+    trimCards(box);
+  };
 
   es.addEventListener("status", e => { work.textContent = JSON.parse(e.data).text; });
   es.addEventListener("delta", e => { work.textContent = ""; answer.textContent += JSON.parse(e.data).text; });
@@ -295,7 +353,15 @@ function ask(text) {
     inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); submit(); } });
     row.append(inp, send); extra.appendChild(row); inp.focus();
   });
-  es.addEventListener("done", () => { work.textContent = ""; stop(); loadTimeline(); });
+  es.addEventListener("done", () => {
+    work.textContent = "";
+    // A stopped query still ends in `done` (the daemon acknowledges the cancel),
+    // so say what happened rather than leaving a blank card.
+    if (!answer.textContent && !extra.textContent) {
+      answer.textContent = bStop.disabled ? "Stopped \\u2014 nothing was changed." : "Done.";
+    }
+    stop(); loadTimeline();
+  });
   es.addEventListener("failed", e => {
     work.textContent = ""; card.classList.add("failed");
     answer.textContent = (JSON.parse(e.data).text) || "Something went wrong.";
@@ -305,8 +371,38 @@ function ask(text) {
     if (finished) return;                       // normal close after done/failed
     work.textContent = ""; card.classList.add("failed");
     if (!answer.textContent) answer.textContent = "Lost the connection to the assistant.";
-    es.close();
+    stop();
   });
+}
+
+// ---- common actions --------------------------------------------------------
+// Deliberately seeded prompts, not a second code path: a chip types for you and
+// nothing more, so it reaches the daemon exactly as a typed request would — same
+// routing, same confirm gate, no privileged shortcut hiding behind a button.
+// `run` fires straight away; `fill` needs a noun, so it seeds the box and waits.
+const CHIPS = [
+  { label: "Install an app\\u2026", fill: "install " },
+  { label: "Remove an app\\u2026", fill: "remove " },
+  { label: "Is anything broken?", run: "is anything broken?" },
+  { label: "How is my disk space?", run: "how is my disk space?" },
+  { label: "How is my wifi?", run: "how is my wifi?" },
+  { label: "What is installed?", run: "what is installed?" },
+];
+
+function renderChips() {
+  const box = document.getElementById("chips");
+  const inp = document.getElementById("ask-input");
+  for (const c of CHIPS) {
+    const b = el("button", "chip", c.label);
+    b.type = "button";                          // never a submit, wherever it sits
+    b.onclick = () => {
+      if (c.run) { ask(c.run); return; }
+      inp.value = c.fill;
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    };
+    box.appendChild(b);
+  }
 }
 
 document.getElementById("ask").addEventListener("submit", ev => {
@@ -319,11 +415,17 @@ document.getElementById("ask").addEventListener("submit", ev => {
 });
 document.addEventListener("keydown", ev => {
   const inp = document.getElementById("ask-input");
-  if (ev.key === "/" && document.activeElement !== inp) { ev.preventDefault(); inp.focus(); }
+  const typing = document.activeElement && document.activeElement.tagName === "INPUT";
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") { ev.preventDefault(); inp.focus(); inp.select(); return; }
+  if (ev.key === "/" && !typing) { ev.preventDefault(); inp.focus(); }
 });
 
 // ---- boot ------------------------------------------------------------------
 async function boot() {
+  renderChips();
+  // Land on the prompt, so the page opens ready to be asked something — unless
+  // the tray sent us here to look at a specific unit, which is its own errand.
+  if (!PARAMS.get("explain")) document.getElementById("ask-input").focus();
   await refresh();
   await loadLedger();
   await loadTimeline();

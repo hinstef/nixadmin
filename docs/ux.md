@@ -151,6 +151,30 @@ single light **invoke** surface (summonable, ephemeral — not resident).
 > silence"). It's on the web page for now, for rapid iteration; folding into native
 > surfaces stays the longer-term moat. Tracked in `nix-nixadmin-edx`.
 
+> **Update (2026-08-13) — the invoke surface absorbs the app store.** Non-technical
+> users asked for **one place for admin tasks, installing included**: given a
+> natural-language way in, they did not want to go to a "store" at all. That is the
+> invoke surface earning its keep — *installing is a sentence, not a place* — and it
+> removes a whole destination rather than adding one, which is the same move as
+> design-for-silence applied to navigation. The web hub is now laid out as that
+> single pane: prompt first and focused, **common actions** as chips under it,
+> replies below, machine status under those.
+>
+> Two rules held while building it:
+>
+> - **A chip only types for you.** Common actions are seeded prompts that take the
+>   same route to the daemon as anything typed, so a button can never reach an
+>   action you could not have asked for, and never skips a confirm. There is one
+>   path in, and it is the one that is gated.
+> - **Cards stack, but stay capped and dismissable.** Enough of a working record
+>   that a slow install stays visible while you ask something else — deliberately
+>   short of a transcript, which would foreground the assistant again.
+>
+> Still a prototype of the surface, not its shape. The intended form is a
+> **summonable spotlight-style overlay** (plausibly this page, wrapped): summoned,
+> used, gone — which is what "invoke, not resident" actually looks like, and what
+> the web page can only imitate. Tracked in `nix-nixadmin-5rf`.
+
 ## Two users
 
 A nerd sets this up *for someone they love*, so there is a second user — the

@@ -82,6 +82,38 @@ def test_page_has_invoke_bar():
     assert "/api/stream" in html and "EventSource" in html
 
 
+def test_invoke_bar_comes_before_the_status_sections():
+    """Single pane of glass: the prompt is the first thing on the page, not a
+    control buried under the health readout."""
+    html = page.render(security.new_token())
+    body = html[html.index("<main>"):]
+    assert body.index('id="ask"') < body.index('id="kept-sec"') < body.index(">Now<")
+
+
+def test_common_action_chips_are_seeded_prompts_only():
+    """A chip must not be a second path to the daemon. It either runs a query the
+    user could have typed, or fills the box — never its own API call."""
+    html = page.render(security.new_token())
+    chips = html[html.index("const CHIPS = ["):html.index("function renderChips")]
+    assert "install " in chips and "is anything broken?" in chips
+    # The only things a chip may carry are text to run or text to prefill.
+    assert "api(" not in chips and "fetch(" not in chips
+
+
+def test_replies_stack_and_stay_capped():
+    """Cards accumulate (a slow install stays visible) but the stack is bounded —
+    a working record, not the chat transcript docs/ux.md rules out."""
+    html = page.render(security.new_token())
+    assert "MAX_CARDS" in html and "box.prepend(card)" in html
+    assert "trimCards" in html
+
+
+def test_running_query_can_be_stopped():
+    """The cancel endpoint is reachable from the UI, not just from the wire."""
+    html = page.render(security.new_token())
+    assert "/api/cancel" in html
+
+
 def test_sse_frame_format():
     frame = sse("delta", {"text": "hi"})
     assert frame == b'event: delta\ndata: {"text": "hi"}\n\n'
