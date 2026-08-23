@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from nixadmin.config import Config
+from nixadmin.errors import ConfigError
 from nixadmin.registry import load_modules
 from nixadmin.sdk import Module
 
@@ -47,3 +50,34 @@ def test_remote_usable_requires_credentials(monkeypatch):
     # an API key in the env makes it usable
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     assert Config(remote_model="claude-sonnet-4-5").remote_usable is True
+
+
+def test_config_reports_independent_errors_together():
+    with pytest.raises(ConfigError) as caught:
+        Config.from_env({
+            "NIXADMIN_CHAIN": "nearby",
+            "NIXADMIN_EVENTS": "memory",
+            "NIXADMIN_LOG_FORMAT": "pretty",
+            "NIXADMIN_LOCAL_URL": "localhost:11434",
+            "NIXADMIN_SOCKET": "relative.sock",
+            "NIXADMIN_AUTOFIX": "sometimes",
+        })
+    message = str(caught.value)
+    for key in ("CHAIN", "EVENTS", "LOG_FORMAT", "LOCAL_URL", "SOCKET", "AUTOFIX"):
+        assert f"NIXADMIN_{key}" in message
+
+
+def test_effective_config_summary_redacts_url_credentials_and_keys():
+    cfg = Config.from_env({
+        "NIXADMIN_REMOTE_BASE": "https://alice:secret@example.test/v1?token=hidden",
+        "ANTHROPIC_API_KEY": "sk-very-secret",
+    })
+    summary = cfg.effective_summary()
+    rendered = repr(summary)
+    assert summary["remote"] == {
+        "configured": True,
+        "model": "claude-sonnet-4-5",
+        "base": "https://example.test/v1",
+        "credential_configured": True,
+    }
+    assert "secret" not in rendered and "sk-very-secret" not in rendered

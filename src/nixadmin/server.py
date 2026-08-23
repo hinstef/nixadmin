@@ -943,6 +943,7 @@ async def _serve(daemon: Daemon) -> None:
 def main() -> None:
     config = Config.from_env()
     logmod.configure(config.log_format, config.log_level)
+    log.info("effective configuration", config=config.effective_summary())
     daemon = Daemon(config)
     try:
         asyncio.run(_serve(daemon))
