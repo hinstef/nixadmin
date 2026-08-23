@@ -65,3 +65,11 @@ schema migration.
   laptop's event rate makes this a non-issue in the near term.
 - Wire protocol went to **v2** (additive: the two timeline messages). Older
   clients simply never ask for them.
+
+## Current status — 2026-08-23
+
+The original decision remains in force. Subsequent work added schema versioning,
+age-based retention and pruning, cursor pagination, the kept-well ledger, and the
+autofix consumer anticipated above. The additive wire protocol is now v4. These
+changes extend the store; they do not alter the single-writer or failure-isolation
+decision.

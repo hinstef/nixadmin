@@ -90,3 +90,9 @@ separately; does not require the full data-model shift.
   this ADR and its explicit revisit trigger.
 - The spec's "Modules are code, not config" section now points here for the full
   reasoning and the conditions under which the decision flips.
+
+## Current status — 2026-08-23
+
+The trusted-code decision still applies. The daemon remains a login-user service,
+so privilege isolation is not yet complete; this is the highest-priority security
+item rather than an implied property of the module SDK.

@@ -1,125 +1,96 @@
 # nixadmin
 
-[![CI](https://github.com/hinstef/nixadmin/actions/workflows/ci.yml/badge.svg)](https://github.com/hinstef/nixadmin/actions/workflows/ci.yml)
+[![Check](https://github.com/hinstef/nixadmin/actions/workflows/check.yml/badge.svg)](https://github.com/hinstef/nixadmin/actions/workflows/check.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A local-first systems agent for NixOS that can explain machine state and take
-small, verifiable actions without handing an LLM a root shell.**
+**A local-first systems agent for NixOS that explains machine state and takes
+small, verifiable actions without giving an LLM a shell or root access.**
 
-`nixadmin` is an ambient observability and remediation layer for a personal
-computer. It grounds answers in live system state, notices failures, and offers
-or performs narrowly defined fixes. Models interpret intent and evidence;
-deterministic code owns actions, privilege, confirmation, rollback, and
-verification.
+`nixadmin` is an observability and remediation layer for a personal computer.
+Models interpret intent and evidence; deterministic code owns actions, privilege,
+confirmation, rollback, and verification.
 
-> **Developer preview:** deployed on the author's NixOS laptop and developed in
-> public. The current target is intentionally narrow: NixOS, systemd, and COSMIC.
-> It is a working personal-system deployment, not yet a general-purpose support
-> product.
+> **Developer preview:** deployed on the author's NixOS laptop. The current target
+> is deliberately narrow—NixOS, systemd, and COSMIC—so the implementation can go
+> deep instead of pretending to support every Linux environment.
 
-## What works today
+## What works
 
-- Answers system questions through an on-device Ollama model grounded in live
-  state gathered by capability modules.
-- Installs and removes applications through isolated Git worktrees, `nix eval`,
-  an explicit diff confirmation, and an atomic NixOS switch.
+- Answers system questions through an on-device Ollama model grounded in live state.
+- Installs and removes applications through isolated worktrees, evaluation, an
+  explicit diff confirmation, and an atomic NixOS switch.
 - Detects failed systemd units, restarts eligible services, verifies the result,
-  and stops retrying when a failure persists.
+  and stops when systemd or nixadmin has already retried unsuccessfully.
 - Presents current health and a persistent event timeline through terminal, tray,
-  and web clients.
-- Escalates difficult queries to an optional remote model only after showing the
-  user a redacted payload and receiving consent.
-- Discovers third-party capability modules through a small, typed Python SDK.
+  Spotlight-style overlay, and web clients.
+- Offers an optional remote model only after showing a redacted payload and
+  receiving consent.
+- Loads capability modules through a small typed Python SDK.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    subgraph Clients[Unprivileged clients]
-        CLI[Terminal]
-        Tray[Tray]
-        Web[Web hub]
-    end
+    CLI[CLI] & Tray[Tray] & Web[Web / overlay] -->|Unix socket · typed JSON| Daemon
 
-    CLI & Tray & Web -->|Unix socket · JSON protocol| Daemon
-
-    subgraph User[User-level daemon]
-        Daemon[nixadmin daemon]
+    subgraph User[Unprivileged application layer]
+        Daemon[Daemon]
         Modules[Capability modules]
-        Local[Local model\nclassify · ground · summarize]
-        Remote[Optional remote model\ntool calling]
-        Actions[Deterministic actions\nand remediation]
+        Models[Local model · optional remote model]
+        Policy[Deterministic policy and actions]
         Store[(SQLite event store)]
-
-        Daemon --> Modules
-        Daemon --> Local
-        Daemon --> Actions
-        Daemon --> Store
-        Local -->|offer · redact · consent| Remote
+        Daemon --> Modules & Models & Policy & Store
     end
 
-    Modules -->|read live state| System[systemd · journald · NixOS]
-    Actions -->|validate in isolated worktree| NixEval[nix eval]
-    Actions -->|fixed action enum| Helper
-
-    subgraph Privileged[Root boundary]
-        Helper[Minimal helper]
-    end
-
+    Modules -->|read state| System[systemd · journald · NixOS]
+    Policy -->|validate in worktree| NixEval[nix eval]
+    Policy -->|fixed action enum| Helper[Minimal root helper]
     Helper -->|test · switch · boot · revert · restart| System
-    System -->|verify real outcome| Actions
+    System -->|verify outcome| Policy
 ```
 
-The important boundary is not local versus cloud AI. It is **model reasoning
-versus system authority**:
+The important boundary is **model reasoning versus system authority**:
 
-- The model never receives a shell or arbitrary root execution.
-- Privileged operations cross a Unix socket as a fixed action enum, not a command
-  string.
-- Configuration changes are validated before confirmation and applied
-  atomically; failed activation triggers rollback.
-- Runtime remediation is checked after execution, and every observation and
-  action is recorded.
-- Remote escalation is visible and optional. The reviewed query is redacted
-  before it leaves the machine, and locally fetched tool results are scrubbed.
+- Models receive no arbitrary command or privileged execution tool.
+- Root operations cross a separate socket as a fixed action enum.
+- Configuration changes are evaluated before confirmation and applied atomically.
+- Failed activation is detected from real exit state and triggers rollback.
+- Runtime fixes are verified after execution; observations and actions are recorded.
+- Remote escalation is visible, optional, and limited to the reviewed redacted text
+  plus deterministically scrubbed tool results.
 
-The detailed tradeoffs and known limits are recorded in the
-[architecture decisions](docs/adr/).
+The current trusted-module and helper-socket limitations are stated in
+[`SECURITY.md`](SECURITY.md); design tradeoffs live in [`docs/adr/`](docs/adr/).
 
 ## One failure, end to end
 
-When a systemd unit fails, the path through the system is deliberately boring:
-
 ```text
-monitor observes transition
-  → daemon records failure
-  → deterministic policy selects restart, inform, or skip
-  → eligible restart crosses the narrow helper boundary
-  → daemon checks the unit's real post-action state
-  → outcome is written to the event timeline
-  → repeated failure stops the loop and asks for human attention
+observe transition → persist evidence → select restart/inform/skip
+→ invoke the narrow helper if needed → verify live state → record outcome
+→ refuse another restart when the failure is looping
 ```
 
-The LLM can explain the evidence, but it does not decide how privilege works or
-whether an unverified action succeeded.
+The model may explain the evidence. It does not define privilege or declare an
+unverified action successful.
 
-## Local and remote models
+## Engineering decisions
 
-The two model paths are independent:
-
-| Path | Typical model | Role | System authority |
-|---|---|---|---|
-| Local | Small Ollama model | Classify, interpret grounded state, summarize | None |
-| Remote | LiteLLM-compatible frontier model | Handle queries beyond the local model through tools | None |
-
-Deterministic install/remove and remediation paths do not require a frontier
-model. If remote execution is unavailable, `nixadmin` reports that limitation
-instead of silently changing behavior.
+- **Deterministic core, probabilistic edges.** Models classify, summarize, and
+  translate; typed policy decides what can change.
+- **Explicit privilege boundary.** The user-facing processes remain separate from
+  a minimal root helper with an allowlisted protocol.
+- **Structured lifecycle ownership.** Async work, client connections, subprocesses,
+  timeouts, and shutdown paths have bounded owners.
+- **Operational memory.** An append-only SQLite timeline supports diagnosis,
+  restart-loop prevention, retention, and a human-readable activity view.
+- **Backpressure at every boundary.** Socket frames, HTTP bodies, threads, sessions,
+  subprocess output, and model context are capped.
+- **Reproducible delivery.** Nix builds the package and runs tests, strict typing,
+  linting, and NixOS-module evaluation through one command.
 
 ## Module SDK
 
-A module teaches the daemon about one domain while depending only on the
-stdlib-only [`nixadmin.sdk`](src/nixadmin/sdk.py):
+Modules depend on the stdlib-only [`nixadmin.sdk`](src/nixadmin/sdk.py):
 
 ```python
 from nixadmin.sdk import Fetcher, Module, SPEC_VERSION
@@ -127,37 +98,24 @@ from nixadmin.sdk import Fetcher, Module, SPEC_VERSION
 manifest = Module(
     spec_version=SPEC_VERSION,
     name="docker",
-    description="containers, images, docker, compose",
-    fetchers=[
-        Fetcher(
-            name="ps",
-            cmd="docker ps",
-            description="Running containers",
-        )
-    ],
+    description="containers and images",
+    fetchers=[Fetcher(name="ps", cmd="docker ps", description="Running containers")],
 )
 ```
 
-Third-party packages register the manifest through a standard entry point:
-
-```toml
-[project.entry-points."nixadmin.modules"]
-docker = "nixadmin_docker:manifest"
-```
-
-The repository includes a separate [`nixadmin-extras`](contrib/nixadmin-extras/)
-package to exercise the same plugin boundary used by external modules.
+They register through the `nixadmin.modules` Python entry-point group. The
+[`nixadmin-extras`](contrib/nixadmin-extras/) package exercises the same boundary
+used by external modules. Modules are trusted code today; they are not a safe
+third-party plugin sandbox.
 
 ## Evaluate the engineering
-
-The complete quality gate is reproducible through Nix:
 
 ```bash
 nix flake check --print-build-logs
 ```
 
-It runs the test suite, `mypy` in strict mode, `ruff`, and Nix evaluation. For a
-faster development loop:
+This runs the complete test suite, strict `mypy`, `ruff`, package evaluation, and
+NixOS-module evaluation. For a faster loop:
 
 ```bash
 nix develop
@@ -166,31 +124,20 @@ ruff check src tests contrib
 mypy src/nixadmin
 ```
 
-The tests focus on protocol behavior, routing, safety gates, redaction, rollback,
-remediation verification, restart-loop prevention, persistence, and daemon/client
-integration. See [`tests/`](tests/) and the accepted
-[ADRs](docs/adr/) for the implementation and design record.
+The tests cover wire compatibility, routing, redaction, privilege gates,
+worktree rollback, persistence, lifecycle cancellation, HTTP boundaries, model
+tool loops, remediation verification, and restart-loop refusal.
 
-## Real deployment
+## Scope
 
-[`nixlap`](https://github.com/hinstef/nixlap) is the public NixOS configuration
-used to deploy and operate `nixadmin`. The two repositories intentionally remain
-separate: this repository contains the agent and NixOS module; `nixlap` provides
-the real declarative machine configuration it reads, validates, and rebuilds.
+The public [`nixlap`](https://github.com/hinstef/nixlap) configuration deploys the
+project on a real laptop. This repository contains the application and NixOS
+module; `nixlap` contains the declarative machine configuration it operates on.
 
-## Product direction
-
-> **A computer you can give to someone you love.**
-
-The longer-term goal is to make computing adapt to the person rather than require
-the person to understand the machine. NixOS and today's models are implementation
-choices; the durable idea is a safe, private, explainable loop between human
-intent and machine state.
-
-The project deliberately optimizes for trust before breadth: local-first,
-reversible, explicit when data may leave the device, and quiet when nothing needs
-attention. Read [`docs/vision.md`](docs/vision.md) for the product thinking and
-[`docs/PROGRESS.md`](docs/PROGRESS.md) for the detailed build history.
+This is not yet a general-purpose support product. It assumes trusted modules, a
+single operator, and the NixOS/systemd/COSMIC stack. Current status and near-term
+priorities are in [`docs/PROGRESS.md`](docs/PROGRESS.md); the longer product thesis
+is in [`docs/vision.md`](docs/vision.md).
 
 ## License
 
