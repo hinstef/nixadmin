@@ -43,6 +43,7 @@ def test_menu_model_states():
     healthy = _menu_model(True, [])
     assert "healthy" in healthy[0].label and healthy[0].enabled is False
     assert healthy[-1].id == QUIT_ID
+    assert healthy[-1].label == "Close tray icon (nixadmin keeps running)"
     assert any(e.separator for e in healthy)
 
     failed = _menu_model(True, [

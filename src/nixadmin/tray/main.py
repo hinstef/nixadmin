@@ -55,7 +55,7 @@ def _menu_model(
     rows.append(MenuEntry(2, separator=True))
     if web_available:
         rows.append(MenuEntry(DETAIL_ID, "Open detail…", action="detail"))
-    rows.append(MenuEntry(QUIT_ID, "Quit nixadmin tray"))
+    rows.append(MenuEntry(QUIT_ID, "Close tray icon (nixadmin keeps running)"))
     return rows
 
 
@@ -87,6 +87,9 @@ class Tray:
 
     def _on_menu(self, entry: MenuEntry) -> None:
         if entry.id == QUIT_ID:
+            # This process is only a protocol client. A clean exit leaves the
+            # daemon/helper/web services untouched and, with Restart=on-failure,
+            # intentionally stays closed until the desktop launcher restores it.
             self._stop.set()
         elif entry.action == "detail":
             asyncio.create_task(self._open_detail())

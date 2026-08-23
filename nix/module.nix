@@ -13,6 +13,20 @@ let
   # + its deps (dbus-fast, structlog). No extra modules, no daemon internals.
   clientPython = pkgs.python3.withPackages (_: [ pkg ]);
 
+  # A graphical way back after the tray's deliberate clean exit. `restart` is
+  # idempotent from the desktop's perspective: systemd remains the sole process
+  # owner, so repeated launcher activation can never create duplicate tray icons.
+  trayLauncher = pkgs.makeDesktopItem {
+    name = "nixadmin-tray";
+    desktopName = "Nixadmin Tray";
+    genericName = "System status assistant";
+    comment = "Show the nixadmin status icon";
+    exec = "${pkgs.systemd}/bin/systemctl --user restart nixadmin-tray.service";
+    icon = "utilities-system-monitor";
+    categories = [ "System" ];
+    terminal = false;
+  };
+
   # Privileged rebuild helper — runs as root, owns a group-accessible socket.
   helper = pkgs.writers.writePython3Bin "nixadmin-helper"
     { flakeIgnore = [ "E221" "E501" ]; }
@@ -288,7 +302,8 @@ in
     users.users.${cfg.user}.extraGroups = [ "nixadmin" ]
       ++ lib.optionals ollamaEnabled [ "render" "video" ];
 
-    environment.systemPackages = [ pkg nixadminApps ];
+    environment.systemPackages = [ pkg nixadminApps ]
+      ++ lib.optionals cfg.tray.enable [ trayLauncher ];
 
     virtualisation.podman.enable = lib.mkIf ollamaEnabled true;
 
