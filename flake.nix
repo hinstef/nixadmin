@@ -40,7 +40,7 @@
         default = pkgs.mkShell {
           packages = [
             (pkgs.python3.withPackages (ps: with ps; [
-              pytest pytest-asyncio structlog httpx litellm dbus-fast mypy
+              pytest pytest-asyncio hypothesis structlog httpx litellm dbus-fast mypy
             ]))
             pkgs.ruff
           ];
@@ -55,7 +55,7 @@
       checks = forAll (system: pkgs:
         let
           pyEnv = pkgs.python3.withPackages (ps: with ps; [
-            pytest pytest-asyncio structlog httpx litellm dbus-fast mypy
+            pytest pytest-asyncio hypothesis structlog httpx litellm dbus-fast mypy
           ]);
           check = name: deps: cmd: pkgs.runCommand "nixadmin-${name}"
             { nativeBuildInputs = deps; }

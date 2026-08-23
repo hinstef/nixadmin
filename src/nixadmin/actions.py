@@ -147,7 +147,14 @@ def edit_packages(text: str, pkg: str, *, add: bool) -> str:
     if add:
         if present:
             return text  # already installed — no-op
-        lines.insert(end, f"    {pkg}\n")
+        newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+        entries = [line for line in lines[start + 1:end] if line.strip()]
+        if entries:
+            indent = entries[0][:len(entries[0]) - len(entries[0].lstrip())]
+        else:
+            closing_indent = lines[end][:len(lines[end]) - len(lines[end].lstrip())]
+            indent = closing_indent + "  "
+        lines.insert(end, f"{indent}{pkg}{newline}")
     else:
         if not present:
             raise NixadminError(f"{pkg} is not in the package list")

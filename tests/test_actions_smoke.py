@@ -7,6 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from structlog.testing import capture_logs
 
 import nixadmin.actions as actions
@@ -69,6 +71,46 @@ def test_edit_remove_absent_raises():
 def test_edit_no_list_raises():
     with pytest.raises(NixadminError, match="home.packages"):
         edit_packages("{ }:\n{ }\n", "steam", add=True)
+
+
+PACKAGE_NAME = st.from_regex(r"[a-z][a-z0-9-]{0,15}", fullmatch=True)
+
+
+@given(
+    packages=st.lists(PACKAGE_NAME, unique=True, max_size=20),
+    target=PACKAGE_NAME,
+    newline=st.sampled_from(["\n", "\r\n"]),
+    indent=st.sampled_from(["    ", "      ", "\t"]),
+)
+def test_edit_add_is_idempotent_and_reversible(packages, target, newline, indent):
+    packages = [package for package in packages if package != target]
+    body = "".join(f"{indent}{package}{newline}" for package in packages)
+    original = (
+        f"{{ pkgs, ... }}:{newline}{{{newline}"
+        f"  # preserved before{newline}"
+        f"  home.packages = with pkgs; [{newline}{body}  ];{newline}"
+        f"  # preserved after{newline}}}{newline}"
+    )
+
+    added = edit_packages(original, target, add=True)
+    assert edit_packages(added, target, add=True) == added
+    assert edit_packages(added, target, add=False) == original
+    expected_indent = indent if packages else "    "
+    assert f"{expected_indent}{target}{newline}" in added
+
+
+@given(packages=st.lists(PACKAGE_NAME, unique=True, min_size=1, max_size=20))
+def test_edit_existing_packages_preserves_unrelated_entries(packages):
+    original = "home.packages = with pkgs; [\n" + "".join(
+        f"  {package}\n" for package in packages
+    ) + "];\n"
+    target = packages[0]
+
+    assert edit_packages(original, target, add=True) == original
+    removed = edit_packages(original, target, add=False)
+    assert target not in {line.strip() for line in removed.splitlines()}
+    assert all(package in {line.strip() for line in removed.splitlines()}
+               for package in packages[1:])
 
 
 # A stand-in for the real (huge) nixpkgs name list — fuzzy_candidates is the pure
