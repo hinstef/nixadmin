@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from nixadmin.llm import local, remote
 from nixadmin.sdk import SPEC_VERSION, Fetcher, Module
 
@@ -65,3 +68,8 @@ def test_rebuild_tool_constrains_action_enum():
     tool = next(t for t in remote.build_tools([]) if t["function"]["name"] == "nixadmin_rebuild")
     assert tool["function"]["parameters"]["properties"]["action"]["enum"] == \
         ["test", "switch", "boot", "revert"]
+
+
+def test_remote_module_does_not_import_litellm_eagerly():
+    code = "import sys; import nixadmin.llm.remote; assert 'litellm' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], check=True)

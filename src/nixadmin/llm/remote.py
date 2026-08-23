@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from importlib import import_module
 from typing import Any
-
-import litellm
 
 from nixadmin.errors import BackendError
 from nixadmin.history import Message
@@ -90,6 +89,9 @@ async def run(
         *(history or []),
         {"role": "user", "content": query},
     ]
+    # Import only when the remote chain is actually invoked. Most nixadmin
+    # processes (tray, web, overlay, local-only daemon work) never need LiteLLM.
+    litellm = import_module("litellm")
 
     while True:
         text_acc = ""
