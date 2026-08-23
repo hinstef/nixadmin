@@ -34,6 +34,7 @@ from pathlib import Path
 from nixadmin.errors import NixadminError
 from nixadmin.log import get_logger
 from nixadmin.util import run as _run
+from nixadmin.util import run_checked as _run_checked
 
 log = get_logger(__name__)
 
@@ -344,7 +345,4 @@ def _pid_alive(pid: int) -> bool:
 
 
 async def _git(repo: str, *args: str) -> str:
-    rc, out = await _run("git", "-C", repo, *args)
-    if rc != 0:
-        raise NixadminError(f"git {' '.join(args)} failed: {out.strip()}")
-    return out
+    return await _run_checked("git", "-C", repo, *args)
