@@ -71,6 +71,18 @@ def test_encode_omits_unset_optionals():
     assert p.decode(line) == p.Done(id="q1")
 
 
+def test_golden_hello_transcript_is_stable():
+    hello = p.Hello(
+        chains=["local", "remote"], ready={"local": False, "remote": True},
+        default_chain="remote", modules=["apps"],
+    )
+    assert p.encode(hello) == (
+        '{"type": "hello", "chains": ["local", "remote"], '
+        '"ready": {"local": false, "remote": true}, "default_chain": "remote", '
+        '"modules": ["apps"], "version": 4, "min_version": 4}\n'
+    )
+
+
 @pytest.mark.parametrize("bad", [
     '{"type": "nonsense", "id": "x"}',  # unknown type
     '{"type": "query", "id": "x"}',      # missing required field (text)

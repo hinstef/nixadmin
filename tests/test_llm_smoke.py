@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,3 +93,60 @@ async def test_remote_lazy_import_failure_is_a_backend_error(monkeypatch):
             "hello", model="missing", api_base=None, tools=[], run_tool=unused_tool,
         ):
             pass
+
+
+async def test_remote_tool_loop_accumulates_streamed_call_and_returns_answer(monkeypatch):
+    calls: list[tuple[str, dict[str, object]]] = []
+    requests: list[list[dict[str, object]]] = []
+
+    def chunk(*, content=None, tool_calls=None):
+        delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+        return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+    def tool_fragment(index, *, id=None, name=None, arguments=None):
+        function = SimpleNamespace(name=name, arguments=arguments)
+        return SimpleNamespace(index=index, id=id, function=function)
+
+    streams = [
+        [
+            chunk(tool_calls=[tool_fragment(0, id="call-1", name="apps_", arguments="{")]),
+            chunk(tool_calls=[tool_fragment(0, name="list", arguments="}")]),
+        ],
+        [chunk(content="Firefox is installed." )],
+    ]
+
+    class Stream:
+        def __init__(self, chunks):
+            self._chunks = iter(chunks)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._chunks)
+            except StopIteration as error:
+                raise StopAsyncIteration from error
+
+    class FakeLiteLLM:
+        async def acompletion(self, **kwargs):
+            requests.append(kwargs["messages"])
+            return Stream(streams.pop(0))
+
+    async def run_tool(name, args):
+        calls.append((name, args))
+        return "firefox 128"
+
+    monkeypatch.setattr(remote, "import_module", lambda _name: FakeLiteLLM())
+    answer = "".join([
+        part async for part in remote.run(
+            "is Firefox installed?", model="fake", api_base=None,
+            tools=remote.build_tools(_modules()), run_tool=run_tool,
+        )
+    ])
+
+    assert answer == "Firefox is installed."
+    assert calls == [("apps_list", {})]
+    assert requests[1][-1] == {
+        "role": "tool", "tool_call_id": "call-1", "content": "firefox 128",
+    }
