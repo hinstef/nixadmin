@@ -134,6 +134,41 @@ async def test_apply_restart_raises_on_failure(sock):
             await SafetyGate(sock).apply_restart("bluetooth.service")
 
 
+async def test_helper_disconnect_without_exit_is_failure(sock):
+    async def incomplete(reader, writer):
+        await reader.readline()
+        writer.write(b'{"stream":"started"}\n')
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(incomplete, path=sock)
+    try:
+        with pytest.raises(SafetyError, match="without a final exit status"):
+            await SafetyGate(sock).apply_switch()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_stalled_helper_times_out(sock, monkeypatch):
+    release = asyncio.Event()
+
+    async def stalled(reader, writer):
+        await reader.readline()
+        await release.wait()
+        writer.close()
+
+    monkeypatch.setattr("nixadmin.safety.HELPER_TIMEOUT_S", 0.02)
+    server = await asyncio.start_unix_server(stalled, path=sock)
+    try:
+        with pytest.raises(SafetyError, match="timed out"):
+            await SafetyGate(sock).apply_switch()
+    finally:
+        release.set()
+        server.close()
+        await server.wait_closed()
+
+
 async def test_context_cache_assembles_and_caches():
     calls = {"n": 0}
 

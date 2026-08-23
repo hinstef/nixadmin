@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 
 from nixadmin.errors import SafetyError
@@ -25,6 +26,7 @@ log = get_logger(__name__)
 
 ConfirmFn = Callable[[str], Awaitable[bool]]
 ACTIONS = ("test", "switch", "boot", "revert")
+HELPER_TIMEOUT_S = float(os.environ.get("NIXADMIN_HELPER_TIMEOUT", "3700"))
 
 
 class SafetyGate:
@@ -94,26 +96,48 @@ class SafetyGate:
     async def _run_helper(self, request: dict[str, str]) -> tuple[str, int]:
         """Send a request to the root helper, collect its streamed output, and
         return ``(output, exit_code)``."""
+        chunks: list[str] = []
+        exit_code: int | None = None
+        writer: asyncio.StreamWriter | None = None
         try:
-            reader, writer = await asyncio.open_unix_connection(self._socket)
+            async with asyncio.timeout(HELPER_TIMEOUT_S):
+                reader, writer = await asyncio.open_unix_connection(self._socket)
+                writer.write((json.dumps(request) + "\n").encode())
+                await writer.drain()
+                writer.write_eof()
+
+                async for raw in reader:
+                    line = raw.decode().strip()
+                    if not line:
+                        continue
+                    msg = json.loads(line)
+                    if not isinstance(msg, dict):
+                        raise SafetyError("privileged helper returned a malformed response")
+                    if "error" in msg:
+                        raise SafetyError(f"privileged helper refused request: {msg['error']}")
+                    stream = msg.get("stream")
+                    if stream is not None:
+                        if not isinstance(stream, str):
+                            raise SafetyError("privileged helper returned a malformed stream")
+                        chunks.append(stream)
+                    if "exit" in msg:
+                        value = msg["exit"]
+                        if isinstance(value, bool) or not isinstance(value, int):
+                            raise SafetyError("privileged helper returned an invalid exit code")
+                        exit_code = value
+        except TimeoutError as e:
+            raise SafetyError(
+                f"privileged helper timed out after {HELPER_TIMEOUT_S:g}s"
+            ) from e
         except OSError as e:
             raise SafetyError(f"cannot reach privileged helper: {e}") from e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise SafetyError("privileged helper returned malformed JSON") from e
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
 
-        writer.write((json.dumps(request) + "\n").encode())
-        await writer.drain()
-        writer.write_eof()
-
-        chunks: list[str] = []
-        exit_code = 0
-        async for raw in reader:
-            line = raw.decode().strip()
-            if not line:
-                continue
-            msg = json.loads(line)
-            if "stream" in msg:
-                chunks.append(msg["stream"])
-            if "exit" in msg:
-                exit_code = msg["exit"]
-        writer.close()
-
+        if exit_code is None:
+            raise SafetyError("privileged helper disconnected without a final exit status")
         return "".join(chunks).strip(), exit_code
