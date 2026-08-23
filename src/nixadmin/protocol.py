@@ -285,6 +285,23 @@ class Ledger:
     TYPE: ClassVar[str] = "ledger"
 
 
+@dataclass
+class GetHealth:
+    """Client → daemon: request bounded operational health information."""
+
+    id: str
+    TYPE: ClassVar[str] = "get_health"
+
+
+@dataclass
+class Health:
+    """Daemon → client: readiness, lifecycle state, and cumulative counters."""
+
+    id: str
+    data: dict[str, object]
+    TYPE: ClassVar[str] = "health"
+
+
 # --------------------------------------------------------------------------- #
 # (de)serialization
 # --------------------------------------------------------------------------- #
@@ -293,7 +310,7 @@ Message = (
     Query | Cancel | Respond | Hello | Delta | Status | Done | Error
     | Confirm | Input | Ready | Event | ListFailures | Failures
     | RestartUnit | ExplainUnit | UnitJournal | Journal | GetTimeline | Timeline
-    | GetLedger | Ledger
+    | GetLedger | Ledger | GetHealth | Health
 )
 
 _REGISTRY: dict[str, type] = {
@@ -302,7 +319,7 @@ _REGISTRY: dict[str, type] = {
         Query, Cancel, Respond, Hello, Delta, Status, Done, Error,
         Confirm, Input, Ready, Event, ListFailures, Failures,
         RestartUnit, ExplainUnit, UnitJournal, Journal, GetTimeline, Timeline,
-        GetLedger, Ledger,
+        GetLedger, Ledger, GetHealth, Health,
     )
 }
 

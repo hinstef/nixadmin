@@ -90,6 +90,12 @@ class Daemon:
             {"type": "get_ledger", "id": _id()}, terminal=(wire.Ledger,))
         return msg.data if isinstance(msg, wire.Ledger) else None
 
+    def health(self) -> dict[str, object] | None:
+        """Operational daemon health, or ``None`` if the daemon is unreachable."""
+        msg, _ = self._roundtrip(
+            {"type": "get_health", "id": _id()}, terminal=(wire.Health,))
+        return msg.data if isinstance(msg, wire.Health) else None
+
     def restart(self, unit: str, scope: str) -> tuple[str, bool]:
         msg, deltas = self._roundtrip(
             {"type": "restart_unit", "id": _id(), "unit": unit, "scope": scope},

@@ -222,6 +222,20 @@ async def test_invalid_utf8_closes_client_cleanly(daemon_socket):
         await daemon.aclose()
 
 
+async def test_health_reports_lifecycle_and_malformed_counter(daemon_socket):
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    conn = FakeConn(confirm_answer=False)
+    await daemon._on_message(conn, "not json")  # type: ignore[arg-type]
+    await daemon._get_health(conn, wire.GetHealth(id="health-1"))  # type: ignore[arg-type]
+
+    health = next(msg for msg in conn.sent if isinstance(msg, wire.Health))
+    assert health.data["store"] == {"backend": "NullStore", "enabled": False}
+    assert health.data["counters"] == {"malformed_messages": 1}
+    assert isinstance(health.data["uptime_s"], float)
+    assert health.data["ready"] == {"local": False, "remote": daemon.remote_ready}
+    await daemon.aclose()
+
+
 async def test_remote_query_round_trip(daemon_socket, monkeypatch):
     # Fake the remote chain so no provider is needed.
     async def fake_run(query, **kwargs) -> AsyncIterator[str]:

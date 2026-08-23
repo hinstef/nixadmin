@@ -53,6 +53,10 @@ class MonitorRunner:
     async def aclose(self) -> None:
         await self._task_set.aclose()
 
+    def health(self) -> dict[str, object]:
+        configured = sum(len(module.monitors) for module in self._modules)
+        return {"configured": configured, "active_tasks": len(self._task_set.tasks)}
+
     # ---- poll ------------------------------------------------------------- #
 
     async def _poll_loop(self, module: Module, monitor: Monitor) -> None:

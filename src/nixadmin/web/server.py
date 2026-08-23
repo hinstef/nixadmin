@@ -173,6 +173,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._guard(qs, mutation=False):
                 return
             self._json(200, {"ledger": self.app.dclient.ledger()})
+        elif parsed.path == "/api/health":
+            if not self._guard(qs, mutation=False):
+                return
+            health = self.app.dclient.health()
+            self._json(200 if health is not None else 503, {"health": health})
         elif parsed.path == "/api/stream":
             self._stream(qs)
         else:

@@ -29,6 +29,7 @@ from nixadmin.history import make_history
 from nixadmin.llm import local as local_llm
 from nixadmin.llm import remote as remote_llm
 from nixadmin.monitors import MonitorRunner
+from nixadmin.observability import OperationalState
 from nixadmin.registry import load_modules
 from nixadmin.routing import Chain, Decision, detect_mutation, resolve, resolve_desired_chain
 from nixadmin.safety import SafetyGate
@@ -126,6 +127,8 @@ class ClientConn:
 class Daemon:
     def __init__(self, config: Config) -> None:
         self.cfg = config
+        self._started_at = time.monotonic()
+        self.operations = OperationalState()
         self.modules = load_modules()
         self.history = make_history(config.history)
         # Persistent system-event timeline (failures, explanations, restarts…).
@@ -244,7 +247,9 @@ class Daemon:
                 try:
                     line = raw.decode().strip()
                 except UnicodeDecodeError as error:
-                    log.warning("invalid client encoding", error=str(error))
+                    self.operations.increment("invalid_encoding")
+                    if self.operations.should_log("invalid_client_encoding"):
+                        log.warning("invalid client encoding", error=str(error))
                     break
                 if not line:
                     continue
@@ -280,7 +285,9 @@ class Daemon:
         try:
             msg = wire.decode(line)
         except NixadminError as e:
-            log.warning("dropping malformed message", error=str(e))
+            self.operations.increment("malformed_messages")
+            if self.operations.should_log("malformed_message"):
+                log.warning("dropping malformed message", error=str(e))
             return
 
         if isinstance(msg, wire.Query):
@@ -310,6 +317,8 @@ class Daemon:
             self._spawn(self._get_timeline(conn, msg), owner=conn)
         elif isinstance(msg, wire.GetLedger):
             self._spawn(self._get_ledger(conn, msg), owner=conn)
+        elif isinstance(msg, wire.GetHealth):
+            self._spawn(self._get_health(conn, msg), owner=conn)
 
     async def _list_failures(self, conn: ClientConn, msg: wire.ListFailures) -> None:
         """Structured current failures for a client to render actions from.
@@ -348,6 +357,19 @@ class Daemon:
         ``MIN(ts)`` supplies the streak floor so a truncated scan can't understate
         a long streak. All queries run concurrently — they're independent."""
         await conn.send(wire.Ledger(id=msg.id, data=await self.timeline.kept_well()))
+
+    async def _get_health(self, conn: ClientConn, msg: wire.GetHealth) -> None:
+        await conn.send(wire.Health(id=msg.id, data={
+            "uptime_s": round(time.monotonic() - self._started_at, 3),
+            "ready": {"local": self.local_ready, "remote": self.remote_ready},
+            "clients": len(self.conns),
+            "background_tasks": len(self._background_tasks),
+            "monitors": self.monitors.health(),
+            "store": {
+                "backend": type(self.store).__name__, "enabled": self.cfg.events != "null",
+            },
+            "counters": self.operations.counters(),
+        }))
 
     async def _restart_unit(self, conn: ClientConn, msg: wire.RestartUnit) -> None:
         """A tray fix-it: restart one already-resolved, currently-failed unit.
@@ -905,6 +927,7 @@ class Daemon:
             try:
                 await conn.send(msg)
             except Exception:  # noqa: BLE001
+                self.operations.increment("send_failures")
                 await self._close_connection(conn)
 
         await asyncio.gather(*(send(conn) for conn in tuple(self.conns)))

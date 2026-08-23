@@ -50,6 +50,8 @@ def test_roundtrip_every_message_type():
             "tally": ["quietly restarted 2 services"],
         }),
         p.Ledger(id="q2", data={}),
+        p.GetHealth(id="q1"),
+        p.Health(id="q1", data={"uptime_s": 1.5, "counters": {"bad": 2}}),
         p.Failures(id="q1", units=[
             {"unit": "cups.service", "scope": "system", "description": "CUPS printing"},
             {"unit": "nixadmin-backup.service", "scope": "user", "description": "Nightly backup"},
