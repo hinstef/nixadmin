@@ -116,10 +116,10 @@ def test_running_query_can_be_stopped():
     assert 'control("/api/cancel"' in operation
 
 
-def test_timeline_is_ten_rows_cursor_paginated():
+def test_timeline_is_five_rows_cursor_paginated():
     timeline = (page.asset("timeline.js") or ("", b""))[1].decode()
     html = page.render(security.new_token())
-    assert "PAGE_SIZE = 10" in timeline
+    assert "PAGE_SIZE = 5" in timeline
     assert 'query.set("before"' in timeline
     assert 'id="older"' in html and 'id="newer"' in html
     assert "New activity" in html
