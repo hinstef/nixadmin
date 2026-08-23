@@ -18,21 +18,23 @@ class TimelineService:
         self.store = store
         self._failures = failures
         self._seen_failures: set[tuple[str, str]] = set()
+        self._transition_lock = asyncio.Lock()
 
     async def record_failure_transitions(self, units: list[dict[str, str]]) -> None:
-        current = {(unit["unit"], unit["scope"]): unit for unit in units}
-        keys = set(current)
-        for unit, scope in keys - self._seen_failures:
-            await self.store.append(
-                "failure_observed", unit=unit, scope=scope, severity="warning",
-                text=current[(unit, scope)].get("description") or f"{unit} failed",
-            )
-        for unit, scope in self._seen_failures - keys:
-            await self.store.append(
-                "failure_cleared", unit=unit, scope=scope, severity="info",
-                text=f"{unit} recovered",
-            )
-        self._seen_failures = keys
+        async with self._transition_lock:
+            current = {(unit["unit"], unit["scope"]): unit for unit in units}
+            keys = set(current)
+            for unit, scope in keys - self._seen_failures:
+                await self.store.append(
+                    "failure_observed", unit=unit, scope=scope, severity="warning",
+                    text=current[(unit, scope)].get("description") or f"{unit} failed",
+                )
+            for unit, scope in self._seen_failures - keys:
+                await self.store.append(
+                    "failure_cleared", unit=unit, scope=scope, severity="info",
+                    text=f"{unit} recovered",
+                )
+            self._seen_failures = keys
 
     async def page(
         self, limit: int, *, unit: str | None = None, before_id: int | None = None,

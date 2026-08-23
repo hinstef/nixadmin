@@ -91,6 +91,7 @@ class ClientConn:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.owned_tasks: set[asyncio.Task[None]] = set()
         self._send_lock = asyncio.Lock()
+        self.closed = False
 
     async def send(self, msg: wire.Message) -> None:
         payload = wire.encode(msg).encode()
@@ -218,6 +219,9 @@ class Daemon:
         def finished(done: asyncio.Task[None]) -> None:
             if owner is not None:
                 owner.owned_tasks.discard(done)
+                if not done.cancelled() and done.exception() is not None:
+                    with contextlib.suppress(RuntimeError):
+                        self._task_set.spawn(self._close_connection(owner))
 
         task.add_done_callback(finished)
         return task
@@ -229,33 +233,48 @@ class Daemon:
     ) -> None:
         conn = ClientConn(reader, writer)
         self.conns.add(conn)
-        await conn.send(wire.Hello(
-            chains=self._chains(),
-            ready={"local": self.local_ready, "remote": self.remote_ready},
-            default_chain=self.cfg.default_chain,
-            modules=[m.name for m in self.modules],
-        ))
         try:
+            await conn.send(wire.Hello(
+                chains=self._chains(),
+                ready={"local": self.local_ready, "remote": self.remote_ready},
+                default_chain=self.cfg.default_chain,
+                modules=[m.name for m in self.modules],
+            ))
             async for raw in reader:
-                line = raw.decode().strip()
+                try:
+                    line = raw.decode().strip()
+                except UnicodeDecodeError as error:
+                    log.warning("invalid client encoding", error=str(error))
+                    break
                 if not line:
                     continue
                 await self._on_message(conn, line)
-        except (asyncio.IncompleteReadError, ConnectionResetError, ValueError) as error:
+        except (
+            asyncio.IncompleteReadError,
+            ConnectionResetError,
+            ValueError,
+            TimeoutError,
+        ) as error:
             log.warning("client connection closed", error=str(error))
-            pass
         finally:
-            self.conns.discard(conn)
-            tasks = tuple(conn.owned_tasks)
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            for pending in conn.pending.values():
-                pending.cancel()
-            with contextlib.suppress(Exception):
-                writer.close()
-                await writer.wait_closed()
+            await self._close_connection(conn)
+
+    async def _close_connection(self, conn: ClientConn) -> None:
+        if conn.closed:
+            return
+        conn.closed = True
+        self.conns.discard(conn)
+        tasks = tuple(conn.owned_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=1.0)
+        for pending in conn.pending.values():
+            pending.cancel()
+        conn.writer.close()
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(1.0):
+                await conn.writer.wait_closed()
 
     async def _on_message(self, conn: ClientConn, line: str) -> None:
         try:
@@ -873,11 +892,13 @@ class Daemon:
         await self._send_all(wire.Ready(chain=chain))
 
     async def _send_all(self, msg: wire.Message) -> None:
-        for conn in list(self.conns):
+        async def send(conn: ClientConn) -> None:
             try:
                 await conn.send(msg)
             except Exception:  # noqa: BLE001
-                self.conns.discard(conn)
+                await self._close_connection(conn)
+
+        await asyncio.gather(*(send(conn) for conn in tuple(self.conns)))
 
 
 async def _serve(daemon: Daemon) -> None:

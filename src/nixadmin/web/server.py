@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 import uuid
 from collections.abc import Iterator
@@ -26,12 +27,15 @@ from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
 from nixadmin.web.session import QuerySession, sse
 
+SocketRequest = socket.socket | tuple[bytes, socket.socket]
+
 log = get_logger(__name__)
 
 DEFAULT_PORT = 7677
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_QUERY_CHARS = 4_000
 MAX_ACTIVE_SESSIONS = 16
+MAX_HTTP_THREADS = 32
 # CSP: no external anything; static assets and API calls are same-origin.
 _CSP = (
     "default-src 'none'; style-src 'self'; script-src 'self'; "
@@ -235,8 +239,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self._body()
-        except _RequestTooLarge:
-            self._json(413, {"error": "request body too large"})
+        except (_RequestTooLarge, _BadRequest) as error:
+            self.close_connection = True
+            self._json(error.status, {"error": str(error)})
             return
         if parsed.path in ("/api/respond", "/api/cancel"):
             self._invoke_control(parsed.path, body)
@@ -278,16 +283,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class _RequestTooLarge(ValueError):
-    pass
+    status = 413
+
+
+class _BadRequest(ValueError):
+    status = 400
 
 
 def _content_length(value: str | None) -> int:
     try:
         length = int(value or "0")
-    except ValueError:
-        return 0
+    except ValueError as error:
+        raise _BadRequest("invalid content length") from error
     if length < 0:
-        return 0
+        raise _BadRequest("invalid content length")
     if length > MAX_REQUEST_BODY_BYTES:
         raise _RequestTooLarge
     return length
@@ -305,6 +314,26 @@ class _WebServer(ThreadingHTTPServer):
         # a /api/respond on one thread can reach the session streaming on another.
         self.sessions: dict[str, QuerySession] = {}
         self._sessions_lock = threading.Lock()
+        self._handler_slots = threading.BoundedSemaphore(MAX_HTTP_THREADS)
+
+    def process_request(self, request: SocketRequest, client_address: tuple[str, int]) -> None:
+        assert isinstance(request, socket.socket)
+        if not self._handler_slots.acquire(blocking=False):
+            request.sendall(
+                b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+                b"Content-Length: 0\r\n\r\n"
+            )
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(
+        self, request: SocketRequest, client_address: tuple[str, int],
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._handler_slots.release()
 
     def register_session(self, s: QuerySession) -> str:
         with self._sessions_lock:
@@ -322,6 +351,15 @@ class _WebServer(ThreadingHTTPServer):
     def get_session(self, qid: str) -> QuerySession | None:
         with self._sessions_lock:
             return self.sessions.get(qid)
+
+    def server_close(self) -> None:
+        with self._sessions_lock:
+            sessions = list(self.sessions.values())
+            self.sessions.clear()
+        for session in sessions:
+            session.cancel()
+            session.close()
+        super().server_close()
 
 
 @contextmanager

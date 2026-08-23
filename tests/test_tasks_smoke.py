@@ -31,3 +31,21 @@ async def test_task_set_rejects_work_after_close():
 
     with pytest.raises(RuntimeError, match="closing"):
         tasks.spawn(work())
+
+
+async def test_task_set_shutdown_is_bounded_when_task_ignores_cancel():
+    tasks = TaskSet("stubborn")
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = tasks.spawn(stubborn())
+    await asyncio.sleep(0)
+    await tasks.aclose(deadline_s=0.01)
+    assert not task.done()
+    release.set()
+    await task

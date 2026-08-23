@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from nixadmin.store import EventStore
 from nixadmin.timeline import TimelineService
 
@@ -34,3 +36,20 @@ async def test_timeline_page_has_stable_older_cursor(tmp_path):
     await store.aclose()
     assert [event["text"] for event in events] == ["2", "1"]
     assert cursor == events[-1]["id"]
+
+
+async def test_failure_transition_updates_are_serialized(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+
+    async def no_failures():
+        return []
+
+    service = TimelineService(store, no_failures)
+    unit = {"unit": "a.service", "scope": "system", "description": "A"}
+    await asyncio.gather(
+        service.record_failure_transitions([unit]),
+        service.record_failure_transitions([unit]),
+    )
+    events = await store.recent()
+    await store.aclose()
+    assert [event["kind"] for event in events] == ["failure_observed"]

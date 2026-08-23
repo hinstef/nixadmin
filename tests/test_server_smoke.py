@@ -53,6 +53,30 @@ async def test_client_send_is_bounded(monkeypatch):
         await conn.send(wire.Delta(id="x", text="x" * 70_000))
 
 
+async def test_broadcast_does_not_serialize_clients(daemon_socket):
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    slow_release = asyncio.Event()
+    fast_received = asyncio.Event()
+
+    class SlowConn:
+        async def send(self, _msg):
+            await slow_release.wait()
+
+    class FastConn:
+        async def send(self, _msg):
+            fast_received.set()
+
+    daemon.conns.update((SlowConn(), FastConn()))  # type: ignore[arg-type]
+    broadcast = asyncio.create_task(daemon._send_all(wire.Ready(chain="local")))
+    try:
+        async with asyncio.timeout(0.2):
+            await fast_received.wait()
+    finally:
+        slow_release.set()
+        await broadcast
+        await daemon.aclose()
+
+
 @pytest.fixture
 def daemon_socket(tmp_path):
     return str(tmp_path / "nixadmin.sock")
@@ -175,6 +199,24 @@ async def test_disconnect_cancels_non_query_request(daemon_socket, monkeypatch):
         await writer.wait_closed()
         async with asyncio.timeout(1.0):
             await cancelled.wait()
+    finally:
+        server_task.cancel()
+        await daemon.aclose()
+
+
+async def test_invalid_utf8_closes_client_cleanly(daemon_socket):
+    daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
+    server_task = asyncio.create_task(daemon.run())
+    await asyncio.sleep(0.1)
+    try:
+        reader, writer = await asyncio.open_unix_connection(daemon_socket)
+        await _read_until(reader, "hello")
+        writer.write(b"\xff\n")
+        await writer.drain()
+        async with asyncio.timeout(1.0):
+            assert await reader.read() == b""
+        writer.close()
+        await writer.wait_closed()
     finally:
         server_task.cancel()
         await daemon.aclose()

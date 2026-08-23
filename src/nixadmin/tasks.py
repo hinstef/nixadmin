@@ -31,10 +31,15 @@ class TaskSet:
         if not task.cancelled() and (error := task.exception()) is not None:
             log.error("owned task failed", component=self.name, error=str(error), exc_info=error)
 
-    async def aclose(self) -> None:
+    async def aclose(self, deadline_s: float = 5.0) -> None:
         self._closing = True
         tasks = tuple(self.tasks)
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            _done, pending = await asyncio.wait(tasks, timeout=deadline_s)
+            if pending:
+                log.error(
+                    "owned tasks ignored cancellation", component=self.name,
+                    count=len(pending),
+                )
