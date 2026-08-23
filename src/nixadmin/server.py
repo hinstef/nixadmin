@@ -16,11 +16,10 @@ import contextlib
 import os
 import time
 from collections.abc import Coroutine
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from nixadmin import actions, autofix, ledger, redact, remediation
+from nixadmin import actions, autofix, redact, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
 from nixadmin.config import Config
@@ -38,6 +37,7 @@ from nixadmin.session import SessionRegistry
 from nixadmin.store import make_store
 from nixadmin.supervision import notify, watchdog_interval
 from nixadmin.tasks import TaskSet
+from nixadmin.timeline import TimelineService
 
 log = logmod.get_logger(__name__)
 
@@ -130,9 +130,7 @@ class Daemon:
         # Persistent system-event timeline (failures, explanations, restarts…).
         # The daemon is the single writer; clients read it back over the socket.
         self.store = make_store(config.events, config.state_dir)
-        # Last-seen failed units, so we can log failure_observed / failure_cleared
-        # on transitions rather than re-logging the same failure every poll.
-        self._seen_failures: set[tuple[str, str]] = set()
+        self.timeline = TimelineService(self.store, remediation.failed_units)
         # Autofix: policy + per-episode dedup (units acted on in their current
         # failure episode) + a lock so overlapping failure events serialise.
         self.autofix_cfg = autofix.AutofixConfig(
@@ -301,34 +299,20 @@ class Daemon:
         set turns the tray/web poll into failure_observed / failure_cleared events
         on the persistent timeline, with no extra polling loop of our own."""
         units = await remediation.failed_units()
-        await self._record_failure_transitions(units)
+        await self.timeline.record_failure_transitions(units)
         await conn.send(wire.Failures(id=msg.id, units=units))
 
     async def _record_failure_transitions(self, units: list[dict[str, str]]) -> None:
-        current = {(u["unit"], u["scope"]): u for u in units}
-        keys = set(current)
-        for key in keys - self._seen_failures:
-            unit, scope = key
-            await self.store.append(
-                "failure_observed", unit=unit, scope=scope, severity="warning",
-                text=current[key].get("description") or f"{unit} failed",
-            )
-        for unit, scope in self._seen_failures - keys:
-            await self.store.append(
-                "failure_cleared", unit=unit, scope=scope, severity="info",
-                text=f"{unit} recovered",
-            )
-        self._seen_failures = keys
+        await self.timeline.record_failure_transitions(units)
 
     async def _get_timeline(self, conn: ClientConn, msg: wire.GetTimeline) -> None:
         """Read-only: the persisted event timeline for the web hub."""
         # Fetch one extra row so the client can offer an Older button without a
         # separate count query. IDs are append-only, making this cursor stable
         # while new events arrive at the head of the timeline.
-        limit = max(1, min(msg.limit, 1000))
-        rows = await self.store.recent(limit + 1, unit=msg.unit, before_id=msg.before_id)
-        events = rows[:limit]
-        next_cursor = int(events[-1]["id"]) if len(rows) > limit and events else None
+        events, next_cursor = await self.timeline.page(
+            msg.limit, unit=msg.unit, before_id=msg.before_id,
+        )
         await conn.send(wire.Timeline(
             id=msg.id, events=events, next_cursor=next_cursor,
         ))
@@ -344,21 +328,7 @@ class Daemon:
         attention/upkeep events out of a single capped scan; the store's true
         ``MIN(ts)`` supplies the streak floor so a truncated scan can't understate
         a long streak. All queries run concurrently — they're independent."""
-        now = time.time()
-        window_start = now - ledger.DEFAULT_WINDOW_DAYS * ledger.DAY_S
-        limit = ledger.LEDGER_SCAN_LIMIT
-        autofix_evs, restart_evs, cleared_evs, earliest, failures = await asyncio.gather(
-            self.store.recent(limit, kind="autofix"),          # inform/still_failing + healthy
-            self.store.recent(limit, kind="restart"),           # manual (person-triggered) fixes
-            self.store.recent(limit, kind="failure_cleared", since=window_start),
-            self.store.earliest(),
-            remediation.failed_units(),                          # live, authoritative
-        )
-        summary = ledger.summarize(
-            [*autofix_evs, *restart_evs, *cleared_evs],
-            now=now, current_failures=len(failures), earliest_ts=earliest,
-        )
-        await conn.send(wire.Ledger(id=msg.id, data=asdict(summary)))
+        await conn.send(wire.Ledger(id=msg.id, data=await self.timeline.kept_well()))
 
     async def _restart_unit(self, conn: ClientConn, msg: wire.RestartUnit) -> None:
         """A tray fix-it: restart one already-resolved, currently-failed unit.
