@@ -13,6 +13,39 @@ let
   # + its deps (dbus-fast, structlog). No extra modules, no daemon internals.
   clientPython = pkgs.python3.withPackages (_: [ pkg ]);
 
+  # The invoke overlay is a tiny GTK/layer-shell host around the existing web UI.
+  # Keep these heavy desktop libraries out of the daemon and ordinary clients.
+  overlayPython = pkgs.python3.withPackages (ps: [ pkg ps.pygobject3 ]);
+  overlayLibraries = [
+    pkgs.gobject-introspection
+    pkgs.glib.out
+    pkgs.pango.out
+    pkgs.gdk-pixbuf.out
+    pkgs.graphene.out
+    pkgs.harfbuzz.out
+    pkgs.gtk4
+    pkgs.libsoup_3.out
+    pkgs.webkitgtk_6_0
+    pkgs.gtk4-layer-shell
+  ];
+  overlayApp = pkgs.writeShellScriptBin "nixadmin-overlay" ''
+    export GI_TYPELIB_PATH="${lib.makeSearchPath "lib/girepository-1.0" overlayLibraries}''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+    export LD_LIBRARY_PATH="${lib.makeLibraryPath overlayLibraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_PRELOAD="${pkgs.gtk4-layer-shell}/lib/libgtk4-layer-shell.so''${LD_PRELOAD:+:$LD_PRELOAD}"
+    exec ${overlayPython}/bin/python -c 'from nixadmin.overlay import main; main()' "$@"
+  '';
+
+  overlayLauncher = pkgs.makeDesktopItem {
+    name = "nixadmin";
+    desktopName = "Nixadmin";
+    genericName = "System assistant";
+    comment = "Ask nixadmin or make a system change";
+    exec = "${overlayApp}/bin/nixadmin-overlay";
+    icon = "utilities-system-monitor";
+    categories = [ "System" "Utility" ];
+    terminal = false;
+  };
+
   # A graphical way back after the tray's deliberate clean exit. `restart` is
   # idempotent from the desktop's perspective: systemd remains the sole process
   # owner, so repeated launcher activation can never create duplicate tray icons.
@@ -295,6 +328,16 @@ in
       default = 7677;
       description = "Loopback port for the detail web view.";
     };
+
+    overlay.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run a warm Spotlight-style GTK/WebKit overlay for the invoke surface.
+        Requires the web view and a Wayland compositor supporting layer shell
+        (including COSMIC).
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -303,7 +346,15 @@ in
       ++ lib.optionals ollamaEnabled [ "render" "video" ];
 
     environment.systemPackages = [ pkg nixadminApps ]
-      ++ lib.optionals cfg.tray.enable [ trayLauncher ];
+      ++ lib.optionals cfg.tray.enable [ trayLauncher ]
+      ++ lib.optionals cfg.overlay.enable [ overlayApp overlayLauncher ];
+
+    assertions = [
+      {
+        assertion = !cfg.overlay.enable || cfg.web.enable;
+        message = "services.nixadmin.overlay requires services.nixadmin.web.enable";
+      }
+    ];
 
     virtualisation.podman.enable = lib.mkIf ollamaEnabled true;
 
@@ -354,7 +405,7 @@ in
       wantedBy = [ "graphical-session.target" ];
       # xdg-open (xdg-utils) for the "Open detail" link; a user service has a
       # minimal PATH otherwise.
-      path = [ pkgs.xdg-utils ];
+      path = [ pkgs.xdg-utils ] ++ lib.optionals cfg.overlay.enable [ overlayApp ];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${clientPython}/bin/nixadmin-tray";
@@ -375,6 +426,21 @@ in
         ExecStart = "${clientPython}/bin/nixadmin-web";
         Restart = "on-failure";
         RestartSec = "5s";
+      };
+    };
+
+    # A warm, hidden layer-shell surface. Gtk.Application's D-Bus
+    # single-instance handling forwards subsequent `nixadmin-overlay`
+    # invocations (tray, launcher, shortcut) to this process.
+    systemd.user.services.nixadmin-overlay = lib.mkIf cfg.overlay.enable {
+      description = "nixadmin Spotlight-style invoke overlay";
+      after = [ "graphical-session.target" "nixadmin-web.service" ];
+      wantedBy = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${overlayApp}/bin/nixadmin-overlay --gapplication-service";
+        Restart = "on-failure";
+        RestartSec = "3s";
       };
     };
 

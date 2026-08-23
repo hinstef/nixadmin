@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 from urllib.parse import quote
 
 from dbus_fast import BusType
@@ -24,19 +25,23 @@ from nixadmin.web.server import url_file
 log = get_logger(__name__)
 
 POLL_INTERVAL_S = 20.0
+INVOKE_ID = 7000
 DETAIL_ID = 8000
 QUIT_ID = 9000
 
 
 def _menu_model(
     connected: bool, units: list[dict[str, str]] | None, *, web_available: bool = False,
+    overlay_available: bool = False,
 ) -> list[MenuEntry]:
-    """Status header, then per failed unit a Restart and an Explain row, an
-    optional "Open detail" link, then Quit.
+    """Invoke entry, status, failed-unit actions, full hub, then tray close.
 
     Ids: 1 = header (disabled), 100+i = restart, 200+i = explain,
-    DETAIL_ID = open detail, QUIT_ID = quit."""
+    INVOKE_ID = overlay, DETAIL_ID = full hub, QUIT_ID = close tray."""
     rows: list[MenuEntry] = []
+    if overlay_available:
+        rows.append(MenuEntry(INVOKE_ID, "Open nixadmin…", action="overlay"))
+        rows.append(MenuEntry(7001, separator=True))
     if not connected:
         rows.append(MenuEntry(1, "⚠ daemon unreachable", enabled=False))
     elif units:
@@ -83,7 +88,11 @@ class Tray:
         )
 
     def _model(self) -> list[MenuEntry]:
-        return _menu_model(self._connected, self._units, web_available=url_file().exists())
+        return _menu_model(
+            self._connected, self._units,
+            web_available=url_file().exists(),
+            overlay_available=shutil.which("nixadmin-overlay") is not None,
+        )
 
     def _on_menu(self, entry: MenuEntry) -> None:
         if entry.id == QUIT_ID:
@@ -91,12 +100,24 @@ class Tray:
             # daemon/helper/web services untouched and, with Restart=on-failure,
             # intentionally stays closed until the desktop launcher restores it.
             self._stop.set()
+        elif entry.action == "overlay":
+            asyncio.create_task(self._open_overlay())
         elif entry.action == "detail":
             asyncio.create_task(self._open_detail())
         elif entry.action == "restart" and entry.unit and entry.scope:
             asyncio.create_task(self._fix(entry.unit, entry.scope))
         elif entry.action == "explain" and entry.unit and entry.scope:
             asyncio.create_task(self._explain(entry.unit, entry.scope))
+
+    async def _open_overlay(self) -> None:
+        """Activate the resident single-instance GTK overlay."""
+        try:
+            await asyncio.create_subprocess_exec(
+                "nixadmin-overlay",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError as e:
+            log.warning("overlay activation failed", error=str(e))
 
     async def _open_detail(self, extra: str = "") -> None:
         """Open the token-gated web hub in the browser (URL written by the web

@@ -4,6 +4,7 @@ import { loadTimeline, wireTimelineNavigation } from "./timeline.js";
 
 window.nixadminSession = `web-${Math.random().toString(36).slice(2, 10)}`;
 const params = new URLSearchParams(location.search);
+if (params.get("surface") === "overlay") document.body.classList.add("overlay");
 
 function el(tag, className, text) {
   const node = document.createElement(tag);

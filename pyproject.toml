@@ -29,6 +29,7 @@ nixadmin = "nixadmin.cli:main"
 nixadmin-daemon = "nixadmin.server:main"
 nixadmin-tray = "nixadmin.tray.main:main"
 nixadmin-web = "nixadmin.web.server:main"
+nixadmin-overlay = "nixadmin.overlay:main"
 
 # Third-party modules register here. Built-in modules are loaded directly (not
 # via entry points) and always take precedence.
@@ -61,6 +62,13 @@ warn_unused_ignores = true
 # (client, icons, main) stays under strict.
 [[tool.mypy.overrides]]
 module = "nixadmin.tray.sni"
+ignore_errors = true
+
+# PyGObject exposes GTK/WebKit/layer-shell dynamically through GI typelibs; no
+# complete Python stubs exist for mypy to check. The pure URL/config surface is
+# still tested without importing GI, and the packaged wrapper is integration-tested.
+[[tool.mypy.overrides]]
+module = "nixadmin.overlay"
 ignore_errors = true
 
 [tool.pytest.ini_options]

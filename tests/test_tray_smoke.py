@@ -7,7 +7,7 @@ the menu model, and that DBusMenu builds a well-formed layout from a model.
 from __future__ import annotations
 
 from nixadmin.tray import icons
-from nixadmin.tray.main import QUIT_ID, _menu_model, _tooltip
+from nixadmin.tray.main import INVOKE_ID, QUIT_ID, _menu_model, _tooltip
 from nixadmin.tray.sni import DBusMenu, MenuEntry
 
 
@@ -40,8 +40,10 @@ def test_health_color_and_status():
 
 
 def test_menu_model_states():
-    healthy = _menu_model(True, [])
-    assert "healthy" in healthy[0].label and healthy[0].enabled is False
+    healthy = _menu_model(True, [], overlay_available=True)
+    assert healthy[0].id == INVOKE_ID and healthy[0].action == "overlay"
+    status = next(entry for entry in healthy if entry.id == 1)
+    assert "healthy" in status.label and status.enabled is False
     assert healthy[-1].id == QUIT_ID
     assert healthy[-1].label == "Close tray icon (nixadmin keeps running)"
     assert any(e.separator for e in healthy)

@@ -37,4 +37,9 @@ details { margin-top: 9px; color: #9299a7; font-size: 12px; } summary { cursor: 
 .event-time { color: #747c8b; font-size: 12px; }.event-title { font-weight: 550; }.event-text { margin-top: 3px; color: #a8aebb; font-size: 13px; }
 #timeline-nav { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; } #page-label { min-width: 60px; text-align: center; color: #858d9c; font-size: 12px; }
 .quiet { padding: 4px 9px; color: #b9c8eb; font-size: 12px; }
+body.overlay { max-width: none; padding: 18px; overflow-y: auto; }
+body.overlay header, body.overlay main > section:not(#invoke), body.overlay .hint { display: none; }
+body.overlay #invoke { margin: 0; }
+body.overlay #chips .chip:nth-child(n+4) { display: none; }
+body.overlay .operation { background: #171a20; }
 @media (max-width: 520px) { body { padding: 16px 12px 40px; }.event { grid-template-columns: 42px 18px 1fr; } }
