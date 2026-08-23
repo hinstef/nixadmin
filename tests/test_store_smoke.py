@@ -15,7 +15,7 @@ import pytest
 
 from nixadmin.config import Config
 from nixadmin.errors import ConfigError
-from nixadmin.store import EventStore, NullStore, make_store
+from nixadmin.store import SCHEMA_VERSION, EventStore, NullStore, make_store
 
 
 @pytest.fixture
@@ -126,6 +126,41 @@ async def test_async_close_waits_for_inflight_store_operation(tmp_path, monkeypa
     release.set()
     await query
     await close
+
+
+async def test_close_is_idempotent_and_closed_store_is_inert(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    await store.aclose()
+    await store.aclose()
+    store.close()
+    assert await store.append("monitor_event") == 0
+    assert await store.recent() == []
+    assert await store.earliest() is None
+    assert await store.prune(100) == 0
+
+
+async def test_corrupt_metadata_does_not_break_timeline(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    store._db.execute(
+        "INSERT INTO events (ts, kind, text, meta) VALUES (?, ?, ?, ?)",
+        (1.0, "monitor_event", "bad metadata", "{broken"),
+    )
+    store._db.commit()
+    events = await store.recent()
+    await store.aclose()
+    assert events[0]["text"] == "bad metadata"
+    assert events[0]["meta"] == {}
+
+
+def test_schema_version_is_recorded_and_future_schema_rejected(tmp_path):
+    path = tmp_path / "events.db"
+    store = EventStore(path)
+    assert store._db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    store._db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    store._db.commit()
+    store.close()
+    with pytest.raises(ConfigError, match="newer than supported"):
+        EventStore(path)
 
 
 async def test_null_store_is_inert():

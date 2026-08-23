@@ -60,6 +60,8 @@ CREATE INDEX IF NOT EXISTS events_unit ON events (unit);
 """
 
 _COLUMNS = ("id", "ts", "kind", "unit", "scope", "severity", "text", "meta")
+SCHEMA_VERSION = 1
+BUSY_TIMEOUT_MS = 5_000
 
 
 @runtime_checkable
@@ -127,10 +129,20 @@ class EventStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        self._db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self._db.execute("PRAGMA journal_mode=WAL")
+        version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            self._db.close()
+            raise ConfigError(
+                f"event store schema v{version} is newer than supported v{SCHEMA_VERSION}"
+            )
         self._db.executescript(_SCHEMA)
+        if version < SCHEMA_VERSION:
+            self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._db.commit()
         self._lock = asyncio.Lock()
+        self._closed = False
         log.info("event store ready", path=str(self.path))
 
     async def append(
@@ -138,6 +150,8 @@ class EventStore:
         severity: str | None = None, text: str = "", meta: dict[str, Any] | None = None,
     ) -> int:
         ts = time.time()
+        if self._closed:
+            return 0
         meta_json = json.dumps(meta) if meta else None
         try:
             async with self._lock:
@@ -165,6 +179,8 @@ class EventStore:
         kind: str | None = None, since: float | None = None,
         before_id: int | None = None,
     ) -> list[Event]:
+        if self._closed:
+            return []
         try:
             async with self._lock:
                 return await asyncio.to_thread(self._query, limit, unit, kind, since, before_id)
@@ -199,6 +215,8 @@ class EventStore:
         return [self._row(r) for r in rows]
 
     async def earliest(self) -> float | None:
+        if self._closed:
+            return None
         try:
             async with self._lock:
                 return await asyncio.to_thread(self._earliest)
@@ -212,6 +230,8 @@ class EventStore:
 
     async def prune(self, before: float) -> int:
         """Delete events older than ``before`` and return the number removed."""
+        if self._closed:
+            return 0
         try:
             async with self._lock:
                 return await asyncio.to_thread(self._prune, before)
@@ -222,21 +242,32 @@ class EventStore:
     def _prune(self, before: float) -> int:
         cursor = self._db.execute("DELETE FROM events WHERE ts < ?", (before,))
         self._db.commit()
+        self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         return max(0, cursor.rowcount)
 
     @staticmethod
     def _row(r: sqlite3.Row) -> Event:
         ev = dict(r)
         raw = ev.pop("meta", None)
-        ev["meta"] = json.loads(raw) if raw else {}
+        try:
+            decoded = json.loads(raw) if raw else {}
+            if not isinstance(decoded, dict):
+                raise TypeError("metadata is not an object")
+            ev["meta"] = decoded
+        except (json.JSONDecodeError, TypeError) as error:
+            log.warning("invalid event metadata", event_id=ev.get("id"), error=str(error))
+            ev["meta"] = {}
         return ev
 
     def close(self) -> None:
-        self._db.close()
+        if not self._closed:
+            self._db.close()
+            self._closed = True
 
     async def aclose(self) -> None:
         async with self._lock:
-            await asyncio.to_thread(self.close)
+            if not self._closed:
+                await asyncio.to_thread(self.close)
 
 
 def make_store(kind: str, state_dir: str | Path) -> Store:
