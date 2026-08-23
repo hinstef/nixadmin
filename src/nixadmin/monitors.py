@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 
 from nixadmin.log import get_logger
 from nixadmin.sdk import Module, Monitor
+from nixadmin.tasks import TaskSet
 
 log = get_logger(__name__)
 
@@ -36,7 +37,7 @@ class MonitorRunner:
     def __init__(self, modules: list[Module], emit: Emit) -> None:
         self._modules = modules
         self._emit = emit
-        self._tasks: list[asyncio.Task[None]] = []
+        self._task_set = TaskSet("monitors")
         self._poll_sem = asyncio.Semaphore(MAX_CONCURRENT_POLLS)
         self._dbus_objs: list[object] = []  # keep bus refs alive
 
@@ -44,16 +45,13 @@ class MonitorRunner:
         for module in self._modules:
             for monitor in module.monitors:
                 if monitor.source == "poll":
-                    self._tasks.append(asyncio.create_task(self._poll_loop(module, monitor)))
+                    self._task_set.spawn(self._poll_loop(module, monitor))
                 elif monitor.source == "dbus":
-                    self._tasks.append(asyncio.create_task(self._dbus_subscribe(module, monitor)))
-        log.info("monitors started", count=len(self._tasks))
+                    self._task_set.spawn(self._dbus_subscribe(module, monitor))
+        log.info("monitors started", count=len(self._task_set.tasks))
 
     async def aclose(self) -> None:
-        for task in self._tasks:
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        await self._task_set.aclose()
 
     # ---- poll ------------------------------------------------------------- #
 
@@ -99,7 +97,7 @@ class MonitorRunner:
                     return
                 if monitor.filter and not monitor.filter(*(msg.body or [])):
                     return
-                asyncio.create_task(self._fire(module, monitor, _summarize(msg.body)))
+                self._task_set.spawn(self._fire(module, monitor, _summarize(msg.body)))
 
             bus.add_message_handler(handler)
             log.info("dbus monitor subscribed", monitor=monitor.name, signal=monitor.signal)

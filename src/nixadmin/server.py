@@ -37,6 +37,7 @@ from nixadmin.sdk import Module
 from nixadmin.session import SessionRegistry
 from nixadmin.store import make_store
 from nixadmin.supervision import notify, watchdog_interval
+from nixadmin.tasks import TaskSet
 
 log = logmod.get_logger(__name__)
 
@@ -141,7 +142,8 @@ class Daemon:
         self._autofix_seen: set[tuple[str, str]] = set()
         self._autofix_lock = asyncio.Lock()
         self._autofix_task: asyncio.Task[None] | None = None
-        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._task_set = TaskSet("daemon")
+        self._background_tasks = self._task_set.tasks
         self.sessions = SessionRegistry()
         self.safety = SafetyGate(HELPER_SOCKET)
         self.context = ContextCache([
@@ -202,11 +204,7 @@ class Daemon:
             self._autofix_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._autofix_task
-        tasks = tuple(self._background_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._task_set.aclose()
         await self.monitors.aclose()
         await self.store.aclose()
         Path(self.cfg.socket_path).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op
@@ -215,17 +213,13 @@ class Daemon:
         self, coroutine: Coroutine[Any, Any, None], *, owner: ClientConn | None = None,
     ) -> asyncio.Task[None]:
         """Start daemon-owned work and retain it until completion or shutdown."""
-        task = asyncio.create_task(coroutine)
-        self._background_tasks.add(task)
+        task = self._task_set.spawn(coroutine)
         if owner is not None:
             owner.owned_tasks.add(task)
 
         def finished(done: asyncio.Task[None]) -> None:
-            self._background_tasks.discard(done)
             if owner is not None:
                 owner.owned_tasks.discard(done)
-            if not done.cancelled() and (error := done.exception()) is not None:
-                log.error("background task failed", error=str(error), exc_info=error)
 
         task.add_done_callback(finished)
         return task

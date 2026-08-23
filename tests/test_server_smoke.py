@@ -137,7 +137,7 @@ async def test_serve_always_closes_daemon():
 async def test_background_task_failure_is_observed(daemon_socket, monkeypatch):
     daemon = Daemon(Config(socket_path=daemon_socket, events="null"))
     errors: list[str] = []
-    monkeypatch.setattr("nixadmin.server.log.error", lambda message, **kw: errors.append(message))
+    monkeypatch.setattr("nixadmin.tasks.log.error", lambda message, **kw: errors.append(message))
 
     async def fails() -> None:
         raise RuntimeError("broken task")
@@ -146,7 +146,7 @@ async def test_background_task_failure_is_observed(daemon_socket, monkeypatch):
     with pytest.raises(RuntimeError, match="broken task"):
         await task
     await asyncio.sleep(0)
-    assert errors == ["background task failed"]
+    assert errors == ["owned task failed"]
     await daemon.aclose()
 
 

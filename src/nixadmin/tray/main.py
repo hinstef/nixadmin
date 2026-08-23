@@ -9,7 +9,6 @@ daemon. The menu (gav.5) turns those failures into one-click fix-its.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import shutil
 from urllib.parse import quote
 
@@ -17,6 +16,7 @@ from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
 
 from nixadmin.log import get_logger
+from nixadmin.tasks import TaskSet
 from nixadmin.tray import icons
 from nixadmin.tray.client import DaemonClient, socket_path
 from nixadmin.tray.sni import DBusMenu, MenuEntry, StatusNotifierItem, register
@@ -79,6 +79,7 @@ class Tray:
         self._units: list[dict[str, str]] | None = None
         self._connected = False
         self._stop = asyncio.Event()
+        self._tasks = TaskSet("tray")
         self.item = StatusNotifierItem(icons.pixmaps(icons.UNKNOWN))
         self.menu = DBusMenu(self._model, self._on_menu)
         self.client = DaemonClient(
@@ -101,13 +102,13 @@ class Tray:
             # intentionally stays closed until the desktop launcher restores it.
             self._stop.set()
         elif entry.action == "overlay":
-            asyncio.create_task(self._open_overlay())
+            self._tasks.spawn(self._open_overlay())
         elif entry.action == "detail":
-            asyncio.create_task(self._open_detail())
+            self._tasks.spawn(self._open_detail())
         elif entry.action == "restart" and entry.unit and entry.scope:
-            asyncio.create_task(self._fix(entry.unit, entry.scope))
+            self._tasks.spawn(self._fix(entry.unit, entry.scope))
         elif entry.action == "explain" and entry.unit and entry.scope:
-            asyncio.create_task(self._explain(entry.unit, entry.scope))
+            self._tasks.spawn(self._explain(entry.unit, entry.scope))
 
     async def _open_overlay(self) -> None:
         """Activate the resident single-instance GTK overlay."""
@@ -151,7 +152,7 @@ class Tray:
         self._schedule_refresh()
 
     def _schedule_refresh(self) -> None:
-        asyncio.create_task(self._refresh())
+        self._tasks.spawn(self._refresh())
 
     async def _refresh(self) -> None:
         units = await self.client.list_failures()
@@ -169,13 +170,13 @@ class Tray:
     async def run(self) -> None:
         bus = await MessageBus(bus_type=BusType.SESSION).connect()
         await register(bus, self.item, self.menu)
-        asyncio.create_task(self.client.run())
-        poll = asyncio.create_task(self._poll())
-        await self._stop.wait()
-        poll.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await poll
-        bus.disconnect()
+        self._tasks.spawn(self.client.run())
+        self._tasks.spawn(self._poll())
+        try:
+            await self._stop.wait()
+        finally:
+            await self._tasks.aclose()
+            bus.disconnect()
 
     async def _poll(self) -> None:
         while True:

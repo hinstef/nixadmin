@@ -16,6 +16,7 @@ from pathlib import Path
 
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
+from nixadmin.tasks import TaskSet
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -156,11 +157,12 @@ async def _run() -> int:
         await writer.wait_closed()
         return 1
     await client._handle(hello)
-    reader_task = asyncio.create_task(client.reader_loop())
+    tasks = TaskSet("cli")
+    tasks.spawn(client.reader_loop())
     try:
         await client.repl()
     finally:
-        reader_task.cancel()
+        await tasks.aclose()
         writer.close()
     return 0
 
