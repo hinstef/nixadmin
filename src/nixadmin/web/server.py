@@ -25,6 +25,19 @@ from nixadmin import protocol as wire
 from nixadmin.log import get_logger
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
+from nixadmin.web.requests import (
+    MAX_REQUEST_BODY_BYTES as MAX_REQUEST_BODY_BYTES,
+)
+from nixadmin.web.requests import (
+    HttpResult,
+    QuerySpec,
+    RequestError,
+    UnitSpec,
+    json_object,
+)
+from nixadmin.web.requests import (
+    content_length as _content_length,
+)
 from nixadmin.web.session import QuerySession, sse
 
 SocketRequest = socket.socket | tuple[bytes, socket.socket]
@@ -32,8 +45,6 @@ SocketRequest = socket.socket | tuple[bytes, socket.socket]
 log = get_logger(__name__)
 
 DEFAULT_PORT = 7677
-MAX_REQUEST_BODY_BYTES = 64 * 1024
-MAX_QUERY_CHARS = 4_000
 MAX_ACTIVE_SESSIONS = 16
 MAX_HTTP_THREADS = 32
 # CSP: no external anything; static assets and API calls are same-origin.
@@ -123,6 +134,9 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj: object) -> None:
         self._write(code, "application/json", json.dumps(obj).encode())
 
+    def _result(self, result: HttpResult) -> None:
+        self._json(result.status, result.payload)
+
     # --- routes ----------------------------------------------------------- #
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -191,16 +205,12 @@ class Handler(BaseHTTPRequestHandler):
         POST (Origin-gated) — so a token alone can't complete a change."""
         if not self._guard(qs, mutation=False):
             return
-        text = (qs.get("text") or [""])[0].strip()
-        if not text:
-            self._json(400, {"error": "empty query"})
+        try:
+            request = QuerySpec.from_query(qs)
+        except RequestError as error:
+            self._result(HttpResult.error(error))
             return
-        if len(text) > MAX_QUERY_CHARS:
-            self._json(413, {"error": "query too large"})
-            return
-        qid = (qs.get("qid") or [""])[0].strip() or uuid.uuid4().hex[:12]
-        session_id = (qs.get("session") or ["web"])[0]
-        session = QuerySession(self.app.dclient.path, qid, text, session_id)
+        session = QuerySession(self.app.dclient.path, request)
         try:
             session.open()
         except OSError:
@@ -231,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
                     session.cancel()  # browser navigated away mid-query
                     return
         finally:
-            self.app.drop_session(qid)
+            self.app.drop_session(request.qid)
             session.close()
 
     def do_POST(self) -> None:
@@ -244,20 +254,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self._body()
-        except (_RequestTooLarge, _BadRequest) as error:
+        except RequestError as error:
             self.close_connection = True
-            self._json(error.status, {"error": str(error)})
+            self._result(HttpResult.error(error))
             return
         if parsed.path in ("/api/respond", "/api/cancel"):
             self._invoke_control(parsed.path, body)
             return
-        unit = str(body.get("unit", ""))
-        scope = str(body.get("scope", "system"))
+        try:
+            unit = UnitSpec.from_body(body)
+        except RequestError as error:
+            self._result(HttpResult.error(error))
+            return
         if parsed.path == "/api/restart":
-            result, ok = self.app.dclient.restart(unit, scope)
+            result, ok = self.app.dclient.restart(unit.unit, unit.scope)
             self._json(200, {"result": result, "ok": ok})
         else:
-            text, ok = self.app.dclient.explain(unit, scope)
+            text, ok = self.app.dclient.explain(unit.unit, unit.scope)
             self._json(200, {"text": text, "ok": ok})
 
     def _invoke_control(self, path: str, body: dict[str, object]) -> None:
@@ -278,33 +291,12 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True})
 
     def _body(self) -> dict[str, object]:
-        try:
-            n = _content_length(self.headers.get("Content-Length"))
-            raw = self.rfile.read(n) if n > 0 else b"{}"
-            parsed = json.loads(raw or b"{}")
-            return parsed if isinstance(parsed, dict) else {}
-        except (ValueError, json.JSONDecodeError):
-            return {}
+        n = _content_length(self.headers.get("Content-Length"))
+        raw = self.rfile.read(n) if n > 0 else b"{}"
+        return json_object(raw)
 
 
-class _RequestTooLarge(ValueError):
-    status = 413
-
-
-class _BadRequest(ValueError):
-    status = 400
-
-
-def _content_length(value: str | None) -> int:
-    try:
-        length = int(value or "0")
-    except ValueError as error:
-        raise _BadRequest("invalid content length") from error
-    if length < 0:
-        raise _BadRequest("invalid content length")
-    if length > MAX_REQUEST_BODY_BYTES:
-        raise _RequestTooLarge
-    return length
+_RequestTooLarge = RequestError
 
 
 class _WebServer(ThreadingHTTPServer):

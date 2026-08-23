@@ -25,6 +25,7 @@ from collections.abc import Iterator
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
 from nixadmin.transport import negotiate_sync
+from nixadmin.web.requests import QuerySpec
 
 CONNECT_TIMEOUT = 5.0
 # Long: an install validates in a worktree and may wait on the user's confirm; a
@@ -40,11 +41,11 @@ CONFIRM_WAIT_TIMEOUT = 300.0
 class QuerySession:
     """One in-flight query over a dedicated daemon socket."""
 
-    def __init__(self, path: str, qid: str, text: str, session_id: str) -> None:
-        self.qid = qid
+    def __init__(self, path: str, request: QuerySpec) -> None:
+        self.qid = request.qid
         self._path = path
-        self._text = text
-        self._session_id = session_id
+        self._text = request.text
+        self._session_id = request.session_id
         # A queued ``Respond`` is the browser's answer; ``None`` is a cancel signal
         # (abandoned wait / explicit cancel) — distinct so a cancel is never
         # mistaken for a real "decline" of a confirm the user never saw.

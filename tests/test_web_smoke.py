@@ -15,6 +15,7 @@ import pytest
 from nixadmin import protocol as wire
 from nixadmin.web import page, security
 from nixadmin.web.dclient import Daemon
+from nixadmin.web.requests import QuerySpec, RequestError, UnitSpec, json_object
 from nixadmin.web.server import (
     MAX_ACTIVE_SESSIONS,
     MAX_REQUEST_BODY_BYTES,
@@ -40,6 +41,21 @@ def test_request_body_limit_rejects_oversize_and_negative_lengths():
     assert _content_length(str(MAX_REQUEST_BODY_BYTES)) == MAX_REQUEST_BODY_BYTES
     with pytest.raises(_RequestTooLarge):
         _content_length(str(MAX_REQUEST_BODY_BYTES + 1))
+
+
+def test_typed_web_request_validation():
+    query = QuerySpec.from_query({"qid": ["q1"], "text": ["  hello  "]})
+    assert query == QuerySpec(qid="q1", text="hello", session_id="web")
+    assert UnitSpec.from_body({"unit": "cups.service", "scope": "user"}) == UnitSpec(
+        unit="cups.service", scope="user",
+    )
+    assert json_object(b'{"unit":"cups.service"}') == {"unit": "cups.service"}
+    with pytest.raises(RequestError, match="empty query"):
+        QuerySpec.from_query({})
+    with pytest.raises(RequestError, match="scope"):
+        UnitSpec.from_body({"unit": "cups.service", "scope": "machine"})
+    with pytest.raises(RequestError, match="object"):
+        json_object(b"[]")
 
 
 def test_session_registry_rejects_duplicates_and_caps_capacity(tmp_path):
@@ -283,7 +299,7 @@ def test_to_sse_maps_messages():
 
 
 def test_query_session_graceful_when_socket_absent(tmp_path):
-    s = QuerySession(str(tmp_path / "nope.sock"), "q1", "hi", "web")
+    s = QuerySession(str(tmp_path / "nope.sock"), QuerySpec("q1", "hi", "web"))
     with pytest.raises(OSError):
         s.open()
 
@@ -305,7 +321,7 @@ def test_query_session_closes_on_bad_handshake(tmp_path, payload):
 
     worker = threading.Thread(target=bad_daemon)
     worker.start()
-    session = QuerySession(sock_path, "qid", "hello", "web")
+    session = QuerySession(sock_path, QuerySpec("qid", "hello", "web"))
     try:
         with pytest.raises(wire.ProtocolError):
             session.open()
@@ -344,7 +360,7 @@ def test_query_session_confirm_round_trip(tmp_path):
     t = threading.Thread(target=fake_daemon)
     t.start()
 
-    session = QuerySession(sock_path, "qid1", "install hello", "web")
+    session = QuerySession(sock_path, QuerySpec("qid1", "install hello", "web"))
     session.open()
     kinds: list[str] = []
     for msg in session.messages():
