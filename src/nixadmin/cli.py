@@ -17,6 +17,7 @@ from pathlib import Path
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
 from nixadmin.tasks import TaskSet
+from nixadmin.transport import negotiate_async
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -147,10 +148,7 @@ async def _run() -> int:
 
     client = Client(reader, writer)
     try:
-        hello = wire.decode((await reader.readline()).decode().strip())
-        if not isinstance(hello, wire.Hello):
-            raise ProtocolError("daemon did not send Hello first")
-        wire.require_compatible(hello)
+        hello = await negotiate_async(reader)
     except ProtocolError as error:
         print(f"nixadmin: {error}", file=sys.stderr)
         writer.close()

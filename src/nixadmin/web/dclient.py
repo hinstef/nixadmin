@@ -12,6 +12,7 @@ import uuid
 
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
+from nixadmin.transport import negotiate_sync
 
 DEFAULT_TIMEOUT = 30.0
 EXPLAIN_TIMEOUT = 90.0  # local model may cold-start
@@ -38,10 +39,7 @@ class Daemon:
             sock.settimeout(timeout)
             sock.connect(self.path)
             with sock, sock.makefile("r") as f:
-                hello = wire.decode(f.readline())
-                if not isinstance(hello, wire.Hello):
-                    raise ProtocolError("daemon did not send Hello first")
-                wire.require_compatible(hello)
+                negotiate_sync(f)
                 sock.sendall((json.dumps(req) + "\n").encode())
                 for line in f:
                     line = line.strip()

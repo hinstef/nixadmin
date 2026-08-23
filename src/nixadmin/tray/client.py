@@ -17,12 +17,12 @@ from pathlib import Path
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
 from nixadmin.log import get_logger
+from nixadmin.transport import HANDSHAKE_TIMEOUT_S, negotiate_async
 
 log = get_logger(__name__)
 
 RECONNECT_DELAY_S = 3.0
 REQUEST_TIMEOUT_S = 10.0
-HANDSHAKE_TIMEOUT_S = 5.0
 EXPLAIN_TIMEOUT_S = 90.0  # the local model may cold-start (~6s) or be slow to stream
 
 
@@ -64,13 +64,7 @@ class DaemonClient:
                 await asyncio.sleep(RECONNECT_DELAY_S)
                 continue
             try:
-                raw = await asyncio.wait_for(reader.readline(), HANDSHAKE_TIMEOUT_S)
-                if not raw:
-                    raise ProtocolError("daemon disconnected before Hello")
-                hello = wire.decode(raw.decode(errors="replace").strip())
-                if not isinstance(hello, wire.Hello):
-                    raise ProtocolError("daemon did not send Hello first")
-                wire.require_compatible(hello)
+                await negotiate_async(reader, HANDSHAKE_TIMEOUT_S)
             except (TimeoutError, ProtocolError, OSError) as error:
                 log.warning("daemon handshake failed", error=str(error))
                 writer.close()

@@ -24,6 +24,7 @@ from collections.abc import Iterator
 
 from nixadmin import protocol as wire
 from nixadmin.errors import ProtocolError
+from nixadmin.transport import negotiate_sync
 
 CONNECT_TIMEOUT = 5.0
 # Long: an install validates in a worktree and may wait on the user's confirm; a
@@ -64,10 +65,7 @@ class QuerySession:
         self._sock = sock
         self._file = sock.makefile("r")
         try:
-            hello = wire.decode(self._file.readline())
-            if not isinstance(hello, wire.Hello):
-                raise ProtocolError("daemon did not send Hello first")
-            wire.require_compatible(hello)
+            negotiate_sync(self._file)
             self._write(wire.Query(id=self.qid, text=self._text, session=self._session_id))
         except (OSError, ProtocolError):
             self.close()
