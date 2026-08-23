@@ -137,6 +137,7 @@ let
     NIXADMIN_CHAIN = cfg.defaultChain;
     NIXADMIN_HISTORY = cfg.history;
     NIXADMIN_EVENTS = cfg.events;
+    NIXADMIN_EVENT_RETENTION_DAYS = toString cfg.eventRetentionDays;
     NIXADMIN_AUTOFIX = if cfg.autofix.enable then "1" else "0";
     NIXADMIN_AUTOFIX_SYSTEM = if cfg.autofix.system then "1" else "0";
     NIXADMIN_AUTOFIX_MAX_ATTEMPTS = toString cfg.autofix.maxAttempts;
@@ -230,6 +231,15 @@ in
         Persistent system-event timeline backend (the observability substrate
         behind the web hub). "sqlite" writes <stateDir>/events.db; "null" disables
         persistence.
+      '';
+    };
+
+    eventRetentionDays = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 90;
+      description = ''
+        Delete timeline events older than this many days. Set to 0 to retain
+        events indefinitely.
       '';
     };
 

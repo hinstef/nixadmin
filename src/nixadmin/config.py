@@ -49,6 +49,7 @@ class Config:
     # Persistent system-event timeline (observability substrate). On by default —
     # legibility is the point. "null" opts out. See nixadmin.store.
     events: str = "sqlite"  # "sqlite" | "null"
+    event_retention_days: int = 90  # 0 disables age-based pruning
     state_dir: str = field(default_factory=lambda: _default_state_dir())
     socket_path: str = field(default_factory=_default_socket)
 
@@ -111,6 +112,15 @@ class Config:
                 f"NIXADMIN_AUTOFIX_MAX_ATTEMPTS must be an integer, got {raw_attempts!r}"
             ) from exc
 
+        raw_retention = get("EVENT_RETENTION_DAYS", "90")
+        try:
+            retention_days = max(0, int(raw_retention))
+        except ValueError as exc:
+            raise ConfigError(
+                "NIXADMIN_EVENT_RETENTION_DAYS must be a non-negative integer, "
+                f"got {raw_retention!r}"
+            ) from exc
+
         return cls(
             flake_dir=get("FLAKE_DIR", ""),
             hostname=get("HOSTNAME", ""),
@@ -121,6 +131,7 @@ class Config:
             default_chain=default_chain,  # type: ignore[arg-type]
             history=get("HISTORY", "null"),
             events=get("EVENTS", "sqlite"),
+            event_retention_days=retention_days,
             state_dir=get("STATE_DIR", _default_state_dir()),
             autofix=flag("AUTOFIX", "1"),
             autofix_system=flag("AUTOFIX_SYSTEM", "1"),

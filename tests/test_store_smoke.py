@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from nixadmin.config import Config
 from nixadmin.errors import ConfigError
 from nixadmin.store import EventStore, NullStore, make_store
 
@@ -92,10 +93,28 @@ async def test_persists_across_reopen(tmp_path):
     assert [e["text"] for e in events] == ["stored"]
 
 
+async def test_prune_removes_only_events_older_than_cutoff(store, monkeypatch):
+    monkeypatch.setattr("nixadmin.store.time.time", lambda: 100.0)
+    await store.append("monitor_event", text="old")
+    monkeypatch.setattr("nixadmin.store.time.time", lambda: 200.0)
+    await store.append("monitor_event", text="new")
+
+    assert await store.prune(150.0) == 1
+    assert [event["text"] for event in await store.recent()] == ["new"]
+
+
+async def test_async_close_waits_for_store_lock(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    await store.aclose()
+    assert await store.recent() == []
+
+
 async def test_null_store_is_inert():
     s = NullStore()
     assert await s.append("explanation", unit="x", text="y") == 0
     assert await s.recent(10) == []
+    assert await s.prune(1.0) == 0
+    await s.aclose()
 
 
 def test_make_store_factory(tmp_path):
@@ -105,3 +124,10 @@ def test_make_store_factory(tmp_path):
     s.close()
     with pytest.raises(ConfigError):
         make_store("bogus", tmp_path)
+
+
+def test_event_retention_config_is_non_negative():
+    assert Config.from_env({}).event_retention_days == 90
+    assert Config.from_env({"NIXADMIN_EVENT_RETENTION_DAYS": "0"}).event_retention_days == 0
+    with pytest.raises(ConfigError, match="EVENT_RETENTION_DAYS"):
+        Config.from_env({"NIXADMIN_EVENT_RETENTION_DAYS": "forever"})

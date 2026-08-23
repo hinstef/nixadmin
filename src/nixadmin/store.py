@@ -85,6 +85,10 @@ class Store(Protocol):
         capped ``recent`` scan can't see back far enough."""
         ...
 
+    async def prune(self, before: float) -> int: ...
+
+    async def aclose(self) -> None: ...
+
 
 class NullStore:
     """No-op backend. Appends vanish; ``recent`` is always empty."""
@@ -103,6 +107,12 @@ class NullStore:
         return []
 
     async def earliest(self) -> float | None:
+        return None
+
+    async def prune(self, before: float) -> int:
+        return 0
+
+    async def aclose(self) -> None:
         return None
 
 
@@ -156,7 +166,8 @@ class EventStore:
         before_id: int | None = None,
     ) -> list[Event]:
         try:
-            return await asyncio.to_thread(self._query, limit, unit, kind, since, before_id)
+            async with self._lock:
+                return await asyncio.to_thread(self._query, limit, unit, kind, since, before_id)
         except sqlite3.Error as e:
             log.warning("event query failed", error=str(e))
             return []
@@ -189,7 +200,8 @@ class EventStore:
 
     async def earliest(self) -> float | None:
         try:
-            return await asyncio.to_thread(self._earliest)
+            async with self._lock:
+                return await asyncio.to_thread(self._earliest)
         except sqlite3.Error as e:
             log.warning("event earliest failed", error=str(e))
             return None
@@ -197,6 +209,20 @@ class EventStore:
     def _earliest(self) -> float | None:
         row = self._db.execute("SELECT MIN(ts) AS m FROM events").fetchone()
         return None if row is None or row["m"] is None else float(row["m"])
+
+    async def prune(self, before: float) -> int:
+        """Delete events older than ``before`` and return the number removed."""
+        try:
+            async with self._lock:
+                return await asyncio.to_thread(self._prune, before)
+        except sqlite3.Error as e:
+            log.warning("event prune failed", error=str(e))
+            return 0
+
+    def _prune(self, before: float) -> int:
+        cursor = self._db.execute("DELETE FROM events WHERE ts < ?", (before,))
+        self._db.commit()
+        return max(0, cursor.rowcount)
 
     @staticmethod
     def _row(r: sqlite3.Row) -> Event:
@@ -207,6 +233,10 @@ class EventStore:
 
     def close(self) -> None:
         self._db.close()
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self.close)
 
 
 def make_store(kind: str, state_dir: str | Path) -> Store:

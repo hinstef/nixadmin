@@ -44,6 +44,7 @@ HELPER_SOCKET = "/run/nixadmin-helper.sock"
 # How often autofix polls for failed units. Poll-driven so it catches user-scope
 # failures (the services monitor is system-bus only) and observes recovery.
 AUTOFIX_POLL_INTERVAL = 15.0
+EVENT_PRUNE_INTERVAL = 24 * 60 * 60.0
 
 # Friendly names for the redaction placeholders, so the escalation confirm can say
 # *what kind* of thing was stripped without ever echoing the secret itself.
@@ -159,6 +160,9 @@ class Daemon:
         log.info("listening", socket=sock, default_chain=self.cfg.default_chain)
 
         await self.monitors.start()
+        if self.cfg.event_retention_days > 0:
+            await self._prune_events()
+            self._spawn(self._event_prune_loop())
         # Seed the autofix episode-set with units already failed at startup, so we
         # act on failures that *happen* from now on — not a boot-time bulk restart.
         # Seeded before the poll loop starts, so the first tick can't treat a
@@ -183,9 +187,7 @@ class Daemon:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.monitors.aclose()
-        close = getattr(self.store, "close", None)
-        if callable(close):
-            close()
+        await self.store.aclose()
         Path(self.cfg.socket_path).unlink(missing_ok=True)  # noqa: ASYNC240 — instant local op
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
@@ -763,6 +765,18 @@ class Daemon:
                 self.local_ready = False
                 self._local_ready_evt.clear()
             await asyncio.sleep(delay if not self.local_ready else 30.0)
+
+    async def _event_prune_loop(self) -> None:
+        while True:
+            await asyncio.sleep(EVENT_PRUNE_INTERVAL)
+            await self._prune_events()
+
+    async def _prune_events(self) -> None:
+        cutoff = time.time() - self.cfg.event_retention_days * 24 * 60 * 60
+        removed = await self.store.prune(cutoff)
+        if removed:
+            log.info("expired old events", removed=removed,
+                     retention_days=self.cfg.event_retention_days)
 
     async def _wait_local_ready(self) -> None:
         await self._local_ready_evt.wait()
