@@ -45,7 +45,7 @@ async def test_client_send_is_bounded(monkeypatch):
         async def drain(self):
             await asyncio.Event().wait()
 
-    monkeypatch.setattr("nixadmin.server.CLIENT_SEND_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("nixadmin.connections.CLIENT_SEND_TIMEOUT_S", 0.01)
     conn = ClientConn(asyncio.StreamReader(), StalledWriter())  # type: ignore[arg-type]
     with pytest.raises(TimeoutError):
         await conn.send(wire.Ready(chain="local"))

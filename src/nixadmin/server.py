@@ -22,9 +22,11 @@ from typing import Any, cast
 from nixadmin import actions, autofix, redact, remediation
 from nixadmin import log as logmod
 from nixadmin import protocol as wire
+from nixadmin.autofix_engine import AutofixEngine
 from nixadmin.config import Config
+from nixadmin.connections import MAX_WIRE_MESSAGE_BYTES, ClientConn, ConnectionManager
 from nixadmin.context import ContextCache
-from nixadmin.errors import NixadminError, ProtocolError
+from nixadmin.errors import NixadminError
 from nixadmin.history import make_history
 from nixadmin.llm import local as local_llm
 from nixadmin.llm import remote as remote_llm
@@ -48,8 +50,6 @@ HELPER_SOCKET = "/run/nixadmin-helper.sock"
 # failures (the services monitor is system-bus only) and observes recovery.
 AUTOFIX_POLL_INTERVAL = 15.0
 EVENT_PRUNE_INTERVAL = 24 * 60 * 60.0
-MAX_WIRE_MESSAGE_BYTES = 64 * 1024
-CLIENT_SEND_TIMEOUT_S = 10.0
 
 # Friendly names for the redaction placeholders, so the escalation confirm can say
 # *what kind* of thing was stripped without ever echoing the secret itself.
@@ -59,11 +59,6 @@ _REMOVED_NAMES = {
     "[slack-token]": "Slack token", "[secret]": "secret",
     "/home/[user]": "home path", "/Users/[user]": "home path",
 }
-
-
-async def _silent_status(_text: str) -> None:
-    """A no-op status sink for autofix — there's no client turn to narrate to."""
-    return None
 
 
 def _summarize_removed(removed: list[str]) -> str:
@@ -80,48 +75,6 @@ def _summarize_removed(removed: list[str]) -> str:
     else:
         joined = ", ".join(names[:-1]) + " and " + names[-1]
     return f", with your {joined} removed"
-
-
-class ClientConn:
-    """One connected client. Owns its writer and pending confirm/input futures."""
-
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self.reader = reader
-        self.writer = writer
-        self.pending: dict[str, asyncio.Future[wire.Respond]] = {}
-        self.tasks: dict[str, asyncio.Task[None]] = {}
-        self.owned_tasks: set[asyncio.Task[None]] = set()
-        self._send_lock = asyncio.Lock()
-        self.closed = False
-
-    async def send(self, msg: wire.Message) -> None:
-        payload = wire.encode(msg).encode()
-        if len(payload) > MAX_WIRE_MESSAGE_BYTES:
-            raise ProtocolError("outgoing message exceeds wire limit")
-        async with self._send_lock:
-            self.writer.write(payload)
-            async with asyncio.timeout(CLIENT_SEND_TIMEOUT_S):
-                await self.writer.drain()
-
-    async def confirm(self, qid: str, text: str) -> bool:
-        await self.send(wire.Confirm(id=qid, text=text))
-        resp = await self._await_response(qid)
-        return bool(resp and resp.confirmed)
-
-    async def _await_response(self, qid: str) -> wire.Respond | None:
-        fut: asyncio.Future[wire.Respond] = asyncio.get_event_loop().create_future()
-        self.pending[qid] = fut
-        try:
-            return await fut
-        except asyncio.CancelledError:
-            return None
-        finally:
-            self.pending.pop(qid, None)
-
-    def deliver_response(self, resp: wire.Respond) -> None:
-        fut = self.pending.get(resp.id)
-        if fut and not fut.done():
-            fut.set_result(resp)
 
 
 class Daemon:
@@ -141,8 +94,6 @@ class Daemon:
             enable=config.autofix, system=config.autofix_system,
             max_attempts=config.autofix_max_attempts,
         )
-        self._autofix_seen: set[tuple[str, str]] = set()
-        self._autofix_lock = asyncio.Lock()
         self._autofix_task: asyncio.Task[None] | None = None
         self._task_set = TaskSet("daemon")
         self._background_tasks = self._task_set.tasks
@@ -152,12 +103,17 @@ class Daemon:
             m.context_provider for m in self.modules if m.context_provider is not None
         ])
         self.monitors = MonitorRunner(self.modules, self._broadcast)
-        self.conns: set[ClientConn] = set()
         self.local_ready = False
         self._local_ready_evt = asyncio.Event()
         # Only ready if the remote can actually authenticate (key/proxy present),
         # so we never route work to a backend that will fail with an auth error.
         self.remote_ready = config.remote_usable
+        self.connections = ConnectionManager(self._on_message, self._hello, self.operations)
+        self.conns = self.connections.clients
+        self.autofix_engine = AutofixEngine(
+            self.autofix_cfg, self.store, self._send_event, self.safety.apply_restart,
+        )
+        self._autofix_seen = self.autofix_engine.seen
         # map exposed tool name -> shell command (fixed; no model-supplied args)
         self._tool_cmds = {
             f"{m.name}_{f.name}": f.cmd
@@ -189,9 +145,8 @@ class Daemon:
         # Seeded before the poll loop starts, so the first tick can't treat a
         # pre-existing failure as new.
         if self.autofix_cfg.enable:
-            self._autofix_seen = {
-                (u["unit"], u["scope"]) for u in await remediation.failed_units()
-            }
+            await self.autofix_engine.seed()
+            self._autofix_seen = self.autofix_engine.seen
             self._autofix_task = asyncio.create_task(self._autofix_loop())
         self._spawn(self._readiness_loop())
         if watchdog_interval() is not None:
@@ -231,55 +186,21 @@ class Daemon:
 
     # ---- connection handling --------------------------------------------- #
 
+    def _hello(self) -> wire.Hello:
+        return wire.Hello(
+            chains=self._chains(),
+            ready={"local": self.local_ready, "remote": self.remote_ready},
+            default_chain=self.cfg.default_chain,
+            modules=[module.name for module in self.modules],
+        )
+
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        conn = ClientConn(reader, writer)
-        self.conns.add(conn)
-        try:
-            await conn.send(wire.Hello(
-                chains=self._chains(),
-                ready={"local": self.local_ready, "remote": self.remote_ready},
-                default_chain=self.cfg.default_chain,
-                modules=[m.name for m in self.modules],
-            ))
-            async for raw in reader:
-                try:
-                    line = raw.decode().strip()
-                except UnicodeDecodeError as error:
-                    self.operations.increment("invalid_encoding")
-                    if self.operations.should_log("invalid_client_encoding"):
-                        log.warning("invalid client encoding", error=str(error))
-                    break
-                if not line:
-                    continue
-                await self._on_message(conn, line)
-        except (
-            asyncio.IncompleteReadError,
-            ConnectionResetError,
-            ValueError,
-            TimeoutError,
-        ) as error:
-            log.warning("client connection closed", error=str(error))
-        finally:
-            await self._close_connection(conn)
+        await self.connections.handle(reader, writer)
 
     async def _close_connection(self, conn: ClientConn) -> None:
-        if conn.closed:
-            return
-        conn.closed = True
-        self.conns.discard(conn)
-        tasks = tuple(conn.owned_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.wait(tasks, timeout=1.0)
-        for pending in conn.pending.values():
-            pending.cancel()
-        conn.writer.close()
-        with contextlib.suppress(Exception):
-            async with asyncio.timeout(1.0):
-                await conn.writer.wait_closed()
+        await self.connections.close(conn)
 
     async def _on_message(self, conn: ClientConn, line: str) -> None:
         try:
@@ -852,85 +773,16 @@ class Daemon:
                 log.warning("autofix loop tick failed", error=str(e))
 
     async def _run_autofix(self) -> None:
-        """Act on newly-failed units. One action per failure episode; the event
-        store's history is the cross-episode restart-loop guard."""
-        async with self._autofix_lock:
-            units = await remediation.failed_units()
-            failed = {(u["unit"], u["scope"]): u for u in units}
-            # A recovered unit's episode is over → forget it so a future failure is
-            # handled fresh.
-            self._autofix_seen &= set(failed)
-            for key, u in failed.items():
-                if key in self._autofix_seen:
-                    continue
-                self._autofix_seen.add(key)
-                try:
-                    await self._autofix_unit(u["unit"], u["scope"])
-                except NixadminError as e:
-                    log.warning("autofix failed", unit=u["unit"], error=str(e))
+        await self.autofix_engine.run_once()
 
     async def _autofix_unit(self, unit: str, scope: str) -> None:
-        since = time.time() - self.autofix_cfg.window_s
-        prior = await self.store.recent(50, unit=unit, kind="autofix", since=since)
-        recorded_attempts = sum(
-            1 for e in prior if e.get("meta", {}).get("action") == "restart"
-        )
-        systemd_attempts = await remediation.restart_count(unit, scope)
-        attempts = max(recorded_attempts, systemd_attempts)
-        decision = autofix.decide(
-            scope=scope, prior_attempts=attempts, cfg=self.autofix_cfg
-        )
-        if decision == "skip":
-            return
-        if decision == "inform":
-            text = (
-                f"{unit} keeps failing and needs a real fix."
-                if attempts else f"{unit} stopped and needs attention."
-            )
-            await self.store.append(
-                "autofix", unit=unit, scope=scope, severity="warning", text=text,
-                meta={
-                    "action": "inform", "recorded_attempts": recorded_attempts,
-                    "systemd_restarts": systemd_attempts,
-                },
-            )
-            await self._send_event("autofix", "warning", text)
-            return
-
-        # decision == "restart": act, verify, record. The outcome's ok/message come
-        # from restart_resolved's single post-restart check — consistent by
-        # construction (no second failed_units() snapshot that could disagree).
-        log.info("autofix restart", unit=unit, scope=scope, attempt=attempts + 1)
-        outcome = await remediation.restart_resolved(
-            unit, scope, status=_silent_status, restart_system=self.safety.apply_restart,
-        )
-        result = "healthy" if outcome.ok else "still_failing"
-        await self.store.append(
-            "autofix", unit=unit, scope=scope,
-            severity="info" if outcome.ok else "warning",
-            text=outcome.message,
-            meta={"action": "restart", "outcome": result, "attempt": attempts + 1},
-        )
-        if outcome.ok:
-            await self._send_event(
-                "autofix", "info", f"{unit} stopped, so I restarted it — it's healthy again.")
-        else:
-            await self._send_event(
-                "autofix", "warning",
-                f"{unit} stopped and a restart didn't fix it — it needs attention.")
+        await self.autofix_engine.handle_unit(unit, scope)
 
     async def _broadcast_ready(self, chain: str) -> None:
         await self._send_all(wire.Ready(chain=chain))
 
     async def _send_all(self, msg: wire.Message) -> None:
-        async def send(conn: ClientConn) -> None:
-            try:
-                await conn.send(msg)
-            except Exception:  # noqa: BLE001
-                self.operations.increment("send_failures")
-                await self._close_connection(conn)
-
-        await asyncio.gather(*(send(conn) for conn in tuple(self.conns)))
+        await self.connections.broadcast(msg)
 
 
 async def _serve(daemon: Daemon) -> None:
